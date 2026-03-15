@@ -1,0 +1,10 @@
+#!/bin/sh
+case "$1" in
+    bound|renew)
+        ifconfig $interface $ip netmask $subnet
+        [ -n "$router" ] && route add default gw $router
+        ;;
+    deconfig)
+        ifconfig $interface 0.0.0.0
+        ;;
+esac

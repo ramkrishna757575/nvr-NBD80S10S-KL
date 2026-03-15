@@ -1,0 +1,25 @@
+diff --git a/arch/arm/boot/dts/sigmastar/mstar-infinity2m-ssr621d-tlnvr.dts b/arch/arm/boot/dts/sigmastar/mstar-infinity2m-ssr621d-tlnvr.dts
+index e3848546a09f..73e469743f07 100644
+--- a/arch/arm/boot/dts/sigmastar/mstar-infinity2m-ssr621d-tlnvr.dts
++++ b/arch/arm/boot/dts/sigmastar/mstar-infinity2m-ssr621d-tlnvr.dts
+@@ -93,14 +93,17 @@ partitions {
+ 			compatible = "fixed-partitions";
+ 			#address-cells = <1>;
+ 			#size-cells = <1>;
+-			rootfs: rootfs@20bc00 {
++			partition@50000 {
++				label = "kernel";
++				reg = <0x050000 0x3F0000>;
++			};
++			partition@440000 {
+ 				label = "rootfs";
+-				reg = <0x20bc00 0xda0000>;
++				reg = <0x440000 0xBC0000>;
+ 			};
+ 		};
+ 	};
+ };
+-
+ // Enabling this causes an interrupt storm
+ &usbphy1 {
+ //	status = "okay";

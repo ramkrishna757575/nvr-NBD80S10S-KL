@@ -1,0 +1,17 @@
+build/
+output/
+linux-chenxing/
+busybox-1.36.1/
+busybox-1.36.1.tar.bz2
+dropbear-2022.83/
+dropbear-2022.83.tar.bz2
+initramfs.cpio
+romfs-new/
+romfs/
+rootfs/
+squashfs-root/
+uImage-chenxing
+*.bin
+*.sqfs
+*.img
+current_state.bin

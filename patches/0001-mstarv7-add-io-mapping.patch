@@ -1,0 +1,51 @@
+diff --git a/arch/arm/mach-mstar/mstarv7.c b/arch/arm/mach-mstar/mstarv7.c
+index a34e53c2b7cc..056ec785f425 100644
+--- a/arch/arm/mach-mstar/mstarv7.c
++++ b/arch/arm/mach-mstar/mstarv7.c
+@@ -139,8 +139,46 @@ static void __init mstarv7_init(void)
+ #endif
+ }
+ 
++
++#define MSTARV7_IO_PHYS	0x1f000000
++
++#define MSTARV7_IO_VIRT	0xfe000000
++
++#define MSTARV7_IO_SIZE	0x00400000
++
++
++
++static const struct map_desc mstarv7_io_desc[] __initdata = {
++
++	{
++
++		.virtual	= MSTARV7_IO_VIRT,
++
++		.pfn		= __phys_to_pfn(MSTARV7_IO_PHYS),
++
++		.length		= MSTARV7_IO_SIZE,
++
++		.type		= MT_DEVICE,
++
++	},
++
++};
++
++
++
++static void __init mstarv7_map_io(void)
++
++{
++
++	iotable_init(mstarv7_io_desc, ARRAY_SIZE(mstarv7_io_desc));
++
++}
++
++
++
+ DT_MACHINE_START(MSTARV7_DT, "MStar/Sigmastar Armv7 (Device Tree)")
+ 	.dt_compat	= mstarv7_board_dt_compat,
++	.map_io		= mstarv7_map_io,
+ 	.init_machine	= mstarv7_init,
+ 	.smp		= smp_ops(mstarv7_smp_ops),
+ MACHINE_END

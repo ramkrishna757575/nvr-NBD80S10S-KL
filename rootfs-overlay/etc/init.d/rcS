@@ -1,0 +1,42 @@
+#!/bin/sh
+mount -t proc none /proc
+mount -t sysfs none /sys
+mount -t devtmpfs none /dev
+mkdir -p /dev/pts
+mount -t devpts none /dev/pts
+
+echo "nvr-custom" > /proc/sys/kernel/hostname
+
+echo "Waiting for USB drive..."
+for i in 1 2 3 4 5 6 7 8; do
+    for dev in /dev/sda1 /dev/sda2 /dev/sdb1 /dev/sdb2; do
+        if [ -b "$dev" ]; then
+            mkdir -p /mnt/newroot
+            if mount $dev /mnt/newroot 2>/dev/null; then
+                if [ -x /mnt/newroot/bin/sh ]; then
+                    echo "Valid rootfs found on $dev, switching root..."
+                    mkdir -p /mnt/newroot/oldroot
+                    pivot_root /mnt/newroot /mnt/newroot/oldroot
+                    exec /init
+                fi
+                umount /mnt/newroot
+            fi
+        fi
+    done
+    sleep 1
+done
+
+echo "No USB rootfs found, booting from flash..."
+ifconfig eth0 up
+udhcpc -i eth0
+echo ""
+echo "=============================="
+echo " linux-chenxing on SSR621Q   "
+echo " Boot (flash) successful!    "
+echo "=============================="
+echo ""
+dropbear -R -p 22
+
+
+# Spawn a shell on UART console (this keeps PID 1 alive too)
+exec /sbin/getty -L ttyS0 115200 vt100
