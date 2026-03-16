@@ -14,14 +14,13 @@ jobs:
         uses: actions/checkout@v4
 
       # ── Toolchain & build dependencies ───────────────────────────────────────
-      # qemu-user-static + binfmt-support let the host run the statically-linked
-      # ARM dropbearkey binary that build.sh produces and immediately invokes.
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-linux-gnueabihf \
             binutils-arm-linux-gnueabihf \
+            libc6-dev \
             libncurses-dev bc bison flex libssl-dev \
             u-boot-tools squashfs-tools make gcc git wget
 
