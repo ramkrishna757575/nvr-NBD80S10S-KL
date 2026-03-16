@@ -1,0 +1,81 @@
+name: Build NVR Firmware
+
+on:
+  workflow_dispatch: # manual trigger only — run from the Actions UI
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Toolchain & build dependencies ───────────────────────────────────────
+      # qemu-user-static + binfmt-support let the host run the statically-linked
+      # ARM dropbearkey binary that build.sh produces and immediately invokes.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf \
+            libncurses-dev bc bison flex libssl-dev \
+            u-boot-tools squashfs-tools make gcc git wget
+
+      # ── Caches ───────────────────────────────────────────────────────────────
+      # Each source tree / build is cached independently so a change in one
+      # (e.g. kernel config) doesn't invalidate the others.
+
+      - name: Cache Linux kernel source
+        uses: actions/cache@v4
+        with:
+          path: build/linux
+          key: linux-mstar_v6_5_rebase-${{ hashFiles('config/kernel.config', 'patches/**') }}
+          restore-keys: |
+            linux-mstar_v6_5_rebase-
+
+      - name: Cache BusyBox source & build
+        uses: actions/cache@v4
+        with:
+          path: build/busybox
+          key: busybox-1.36.1-${{ hashFiles('config/busybox.config') }}
+          restore-keys: |
+            busybox-1.36.1-
+
+      - name: Cache Dropbear source & build
+        uses: actions/cache@v4
+        with:
+          path: build/dropbear
+          key: dropbear-2022.83
+
+      # ── Build ─────────────────────────────────────────────────────────────────
+      - name: Build firmware
+        run: bash build.sh
+
+      # ── Artifacts ─────────────────────────────────────────────────────────────
+      # Flash images and kernel – ready to TFTP-flash via U-Boot
+      - name: Upload flash images
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvr-firmware-${{ github.sha }}
+          path: |
+            output/uImage-chenxing
+            output/romfs-x.squashfs.img
+            output/user-x.squashfs.img
+          if-no-files-found: error
+          retention-days: 30
+
+      # USB rootfs directory – tar it first so permissions/symlinks are preserved
+      - name: Package USB rootfs
+        run: tar -czf output/usb-rootfs.tar.gz -C output usb-rootfs
+
+      - name: Upload USB rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nvr-usb-rootfs-${{ github.sha }}
+          path: output/usb-rootfs.tar.gz
+          if-no-files-found: error
+          retention-days: 30

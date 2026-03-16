@@ -17,6 +17,7 @@ echo ""
 ifconfig eth0 up
 udhcpc -i eth0
 
-dropbear -R -p 22
+mkdir -p /tmp/dropbear
+dropbear -R -r /tmp/dropbear/rsa_host_key -r /tmp/dropbear/ecdsa_host_key -p 22
 
 exec /sbin/getty -L ttyS0 115200 vt100

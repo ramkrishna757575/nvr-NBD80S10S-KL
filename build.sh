@@ -66,9 +66,7 @@ if [ ! -d $BUILD_DIR/dropbear ]; then
     mv $BUILD_DIR/dropbear-${DROPBEAR_VER} $BUILD_DIR/dropbear
 fi
 cd $BUILD_DIR/dropbear
-cat > localoptions.h << 'EOF'
-#define DROPBEAR_SVR_PASSWORD_AUTH 0
-EOF
+# Password auth is enabled by default; no localoptions.h override needed.
 if [ ! -f Makefile ] || [ ! -f dropbear ]; then
     ./configure --host=arm-linux-gnueabihf \
         --disable-zlib --disable-shadow --disable-pam \
@@ -94,14 +92,7 @@ mkdir -p $ROOTFS/usr/sbin $ROOTFS/usr/bin
 cp $BUILD_DIR/dropbear/dropbear $ROOTFS/usr/sbin/
 cp $BUILD_DIR/dropbear/dropbearkey $ROOTFS/usr/bin/
 
-# Generate SSH host keys
-mkdir -p $ROOTFS/etc/dropbear
-$BUILD_DIR/dropbear/dropbearkey -t rsa \
-    -f $ROOTFS/etc/dropbear/dropbear_rsa_host_key
-$BUILD_DIR/dropbear/dropbearkey -t ecdsa \
-    -f $ROOTFS/etc/dropbear/dropbear_ecdsa_host_key
-$BUILD_DIR/dropbear/dropbearkey -t ed25519 \
-    -f $ROOTFS/etc/dropbear/dropbear_ed25519_host_key
+# Host keys are generated at first boot by dropbear -R (written to /tmp/dropbear).
 
 # Required directories
 mkdir -p $ROOTFS/{proc,sys,dev,tmp,root,mnt/newroot}
