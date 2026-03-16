@@ -19,6 +19,7 @@ SigmaStar/MStar SSR621Q (Infinity2M) SoC.
 - A USB rootfs for persistent writable storage
 
 ## Prerequisites
+
 ```bash
 sudo apt install gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
     libncurses-dev bc bison flex libssl-dev u-boot-tools \
@@ -26,6 +27,7 @@ sudo apt install gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
 ```
 
 ## Build
+
 ```bash
 ./build.sh
 ```
@@ -34,14 +36,15 @@ Output files will be in `output/`.
 
 ## Flash layout
 
-| Partition | Offset | Size | Contents |
-|-----------|--------|------|----------|
-| ipl | 0x000000 | 64KB | First stage bootloader (do not touch) |
-| boot | 0x010000 | 256KB | U-Boot |
-| kernel | 0x050000 | 3.9MB | Linux kernel + DTB |
-| rootfs | 0x440000 | 11.8MB | BusyBox rootfs |
+| Partition | Offset   | Size   | Contents                              |
+| --------- | -------- | ------ | ------------------------------------- |
+| ipl       | 0x000000 | 64KB   | First stage bootloader (do not touch) |
+| boot      | 0x010000 | 256KB  | U-Boot                                |
+| kernel    | 0x050000 | 3.9MB  | Linux kernel + DTB                    |
+| rootfs    | 0x440000 | 11.8MB | BusyBox rootfs                        |
 
 ## Flashing via U-Boot TFTP
+
 ```
 setenv serverip 192.168.1.X
 tftpboot 0x22000000 uImage-chenxing
@@ -60,20 +63,25 @@ sf write 0x22000000 0x440000 ${filesize}
 - **USB drive with valid rootfs**: automatically pivots to USB (writable)
 
 ## Setting up USB boot drive
+
 ```bash
 sudo mkfs.ext4 -F /dev/sdX1
 sudo mount /dev/sdX1 /mnt
 sudo cp -a output/usb-rootfs/* /mnt/
 sudo chown -R root:root /mnt/root
-sudo chmod 700 /mnt/root /mnt/root/.ssh
-sudo chmod 600 /mnt/root/.ssh/authorized_keys  # add your key first
 sudo umount /mnt
 ```
 
 ## SSH access
 
-Add your public key to `rootfs-overlay/root/.ssh/authorized_keys` before building,
-or copy it to the USB drive after setup.
+Dropbear is configured for **password authentication**. The default `root` password
+is empty — set one by editing `rootfs-overlay/etc/shadow` before building (replace
+the empty hash field with a crypt hash), or run `passwd root` on the device after
+first boot.
+
+SSH host keys are generated automatically on first boot and stored in `/tmp/dropbear/`
+(lost on reboot — clients will see a new host key each time unless you persist them
+to a writable volume).
 
 ## Credits
 
