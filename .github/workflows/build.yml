@@ -16,11 +16,13 @@ jobs:
       # ── Toolchain & build dependencies ───────────────────────────────────────
       - name: Install dependencies
         run: |
+          sudo dpkg --add-architecture armhf
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-linux-gnueabihf \
             binutils-arm-linux-gnueabihf \
-            libc6-dev-armhf-cross \
+            libc6-dev:armhf \
+            libcrypt-dev:armhf \
             libncurses-dev bc bison flex libssl-dev \
             u-boot-tools squashfs-tools make gcc git wget
 
@@ -48,7 +50,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/dropbear
-          key: dropbear-2022.83
+          key: dropbear-2022.83-v2
 
       # ── Build ─────────────────────────────────────────────────────────────────
       - name: Build firmware

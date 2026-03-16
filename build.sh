@@ -71,7 +71,8 @@ if [ ! -f Makefile ] || [ ! -f dropbear ]; then
     ./configure --host=arm-linux-gnueabihf \
         --disable-zlib --disable-shadow --disable-pam \
         --enable-static --disable-syslog \
-        LDFLAGS="-static" CC=arm-linux-gnueabihf-gcc
+        LDFLAGS="-static" CC=arm-linux-gnueabihf-gcc \
+        ac_cv_func_crypt=yes
 fi
 make -j$JOBS PROGRAMS="dropbear dropbearkey"
 
