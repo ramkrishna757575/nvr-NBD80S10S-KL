@@ -12,6 +12,10 @@ BUSYBOX_VER=1.36.1
 BUSYBOX_URL=https://busybox.net/downloads/busybox-${BUSYBOX_VER}.tar.bz2
 DROPBEAR_VER=2022.83
 DROPBEAR_URL=https://matt.ucc.asn.au/dropbear/releases/dropbear-${DROPBEAR_VER}.tar.bz2
+ZLIB_VER=1.3.1
+ZLIB_URL=https://zlib.net/zlib-${ZLIB_VER}.tar.gz
+OPENSSH_VER=9.9p1
+OPENSSH_URL=https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VER}.tar.gz
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 BUILD_DIR=$SCRIPT_DIR/build
@@ -20,7 +24,7 @@ OUTPUT_DIR=$SCRIPT_DIR/output
 mkdir -p $BUILD_DIR $OUTPUT_DIR
 
 # ── Kernel ────────────────────────────────────────────────────────────────────
-echo "=== [1/5] Building kernel ==="
+echo "=== [1/7] Building kernel ==="
 if [ ! -d $BUILD_DIR/linux ]; then
     git clone --depth=1 -b $LINUX_BRANCH $LINUX_REPO $BUILD_DIR/linux
 fi
@@ -49,7 +53,7 @@ mkimage -A arm -O linux -T kernel -C none \
 echo "Kernel built: $(ls -lh $OUTPUT_DIR/uImage-chenxing | awk '{print $5}')"
 
 # ── BusyBox ───────────────────────────────────────────────────────────────────
-echo "=== [2/5] Building BusyBox ==="
+echo "=== [2/7] Building BusyBox ==="
 if [ ! -d $BUILD_DIR/busybox ]; then
     wget -qO- $BUSYBOX_URL | tar xj -C $BUILD_DIR
     mv $BUILD_DIR/busybox-${BUSYBOX_VER} $BUILD_DIR/busybox
@@ -60,13 +64,16 @@ make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE -j$JOBS
 make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE install
 
 # ── Dropbear ──────────────────────────────────────────────────────────────────
-echo "=== [3/5] Building Dropbear ==="
+echo "=== [3/7] Building Dropbear ==="
 if [ ! -d $BUILD_DIR/dropbear ]; then
     wget -qO- $DROPBEAR_URL | tar xj -C $BUILD_DIR
     mv $BUILD_DIR/dropbear-${DROPBEAR_VER} $BUILD_DIR/dropbear
 fi
 cd $BUILD_DIR/dropbear
-# Password auth is enabled by default; no localoptions.h override needed.
+# Pin the sftp-server path so Dropbear finds our binary.
+cat > localoptions.h << 'EOF'
+#define SFTPSERVER_PATH "/usr/lib/sftp-server"
+EOF
 if [ ! -f Makefile ] || [ ! -f dropbear ]; then
     ./configure --host=arm-linux-gnueabihf \
         --disable-zlib --disable-shadow --disable-pam \
@@ -76,8 +83,50 @@ if [ ! -f Makefile ] || [ ! -f dropbear ]; then
 fi
 make -j$JOBS PROGRAMS="dropbear dropbearkey"
 
+# ── zlib (static, ARM) ────────────────────────────────────────────────────────
+echo "=== [4/7] Building zlib (sftp-server dependency) ==="
+SYSROOT=$BUILD_DIR/sysroot
+mkdir -p $SYSROOT
+if [ ! -d $BUILD_DIR/zlib ]; then
+    wget -qO- $ZLIB_URL | tar xz -C $BUILD_DIR
+    mv $BUILD_DIR/zlib-${ZLIB_VER} $BUILD_DIR/zlib
+fi
+cd $BUILD_DIR/zlib
+if [ ! -f $SYSROOT/lib/libz.a ]; then
+    CC=${CROSS_COMPILE}gcc \
+    CHOST=arm-linux-gnueabihf \
+    ./configure --static --prefix=$SYSROOT
+    make -j$JOBS
+    make install
+fi
+
+# ── OpenSSH sftp-server ───────────────────────────────────────────────────────
+echo "=== [5/7] Building sftp-server (OpenSSH) ==="
+if [ ! -d $BUILD_DIR/openssh ]; then
+    wget -qO- $OPENSSH_URL | tar xz -C $BUILD_DIR
+    mv $BUILD_DIR/openssh-${OPENSSH_VER} $BUILD_DIR/openssh
+fi
+cd $BUILD_DIR/openssh
+if [ ! -f sftp-server ]; then
+    ./configure \
+        --host=arm-linux-gnueabihf \
+        --without-openssl \
+        --without-pam \
+        --without-selinux \
+        --without-kerberos5 \
+        --without-libedit \
+        --with-zlib=$SYSROOT \
+        --with-privsep-user=nobody \
+        --disable-strip \
+        CC=${CROSS_COMPILE}gcc \
+        LDFLAGS="-static -L$SYSROOT/lib" \
+        CFLAGS="-I$SYSROOT/include" \
+        ac_cv_lib_resolv_res_search=no
+    make -j$JOBS sftp-server
+fi
+
 # ── Rootfs ────────────────────────────────────────────────────────────────────
-echo "=== [4/5] Assembling rootfs ==="
+echo "=== [6/7] Assembling rootfs ==="
 ROOTFS=$BUILD_DIR/rootfs
 rm -rf $ROOTFS
 mkdir -p $ROOTFS
@@ -93,6 +142,10 @@ mkdir -p $ROOTFS/usr/sbin $ROOTFS/usr/bin
 cp $BUILD_DIR/dropbear/dropbear $ROOTFS/usr/sbin/
 cp $BUILD_DIR/dropbear/dropbearkey $ROOTFS/usr/bin/
 
+# sftp-server: called by Dropbear for SFTP/scp subsystem requests
+mkdir -p $ROOTFS/usr/lib
+cp $BUILD_DIR/openssh/sftp-server $ROOTFS/usr/lib/
+
 # Host keys are generated at first boot by dropbear -R (written to /tmp/dropbear).
 
 # Required directories
@@ -100,7 +153,7 @@ mkdir -p $ROOTFS/{proc,sys,dev,tmp,root,mnt/newroot}
 ln -sf bin/busybox $ROOTFS/linuxrc
 
 # ── Flash images ──────────────────────────────────────────────────────────────
-echo "=== [5/5] Packing flash images ==="
+echo "=== [7/7] Packing flash images ==="
 
 # romfs: kernel squashfs
 mkdir -p $BUILD_DIR/romfs/boot
