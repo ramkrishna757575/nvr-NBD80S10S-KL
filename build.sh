@@ -13,7 +13,7 @@ BUSYBOX_URL=https://busybox.net/downloads/busybox-${BUSYBOX_VER}.tar.bz2
 DROPBEAR_VER=2022.83
 DROPBEAR_URL=https://matt.ucc.asn.au/dropbear/releases/dropbear-${DROPBEAR_VER}.tar.bz2
 ZLIB_VER=1.3.1
-ZLIB_URL=https://zlib.net/zlib-${ZLIB_VER}.tar.gz
+ZLIB_URL=https://github.com/madler/zlib/releases/download/v${ZLIB_VER}/zlib-${ZLIB_VER}.tar.gz
 OPENSSH_VER=9.9p1
 OPENSSH_URL=https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VER}.tar.gz
 
