@@ -16,7 +16,17 @@ jobs:
       # ── Toolchain & build dependencies ───────────────────────────────────────
       - name: Install dependencies
         run: |
+          # Enable armhf multiarch
           sudo dpkg --add-architecture armhf
+          # Restrict the runner's existing sources to amd64 so they don't 404 on armhf
+          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
+          sudo sed -i 's/^deb mirror/deb [arch=amd64] mirror/' /etc/apt/sources.list || true
+          # Add ports.ubuntu.com as the armhf source
+          cat <<'EOF' | sudo tee /etc/apt/sources.list.d/armhf-ports.list
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main universe
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
+          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
+          EOF
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-linux-gnueabihf \
