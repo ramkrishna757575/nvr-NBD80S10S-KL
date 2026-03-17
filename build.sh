@@ -146,7 +146,8 @@ cp $BUILD_DIR/dropbear/dropbearkey $ROOTFS/usr/bin/
 mkdir -p $ROOTFS/usr/lib
 cp $BUILD_DIR/openssh/sftp-server $ROOTFS/usr/lib/
 
-# Host keys are generated at first boot by dropbear -R (written to /tmp/dropbear).
+# /etc/dropbear is a tmpfs mount point at runtime (keys are generated there on first boot).
+mkdir -p $ROOTFS/etc/dropbear
 
 # Required directories
 mkdir -p $ROOTFS/{proc,sys,dev,tmp,root,mnt/newroot}

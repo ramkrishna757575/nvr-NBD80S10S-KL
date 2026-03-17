@@ -5,7 +5,7 @@ mount -t devtmpfs none /dev
 mkdir -p /dev/pts
 mount -t devpts none /dev/pts
 mount -t tmpfs tmpfs /tmp
-mkdir -p /tmp/dropbear
+mount -t tmpfs tmpfs /etc/dropbear
 
 echo "nvr-custom" > /proc/sys/kernel/hostname
 
@@ -37,8 +37,7 @@ echo " linux-chenxing on SSR621Q   "
 echo " Boot (flash) successful!    "
 echo "=============================="
 echo ""
-mkdir -p /tmp/dropbear
-dropbear -R -r /tmp/dropbear/dropbear_ed25519_host_key -p 22
+dropbear -R -p 22
 
 
 # Spawn a shell on UART console (this keeps PID 1 alive too)
