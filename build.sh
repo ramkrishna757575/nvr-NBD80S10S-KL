@@ -151,6 +151,9 @@ cp $BUILD_DIR/openssh/sftp-server $ROOTFS/usr/lib/
 # /etc/dropbear is a tmpfs mount point at runtime (keys are generated there on first boot).
 mkdir -p $ROOTFS/etc/dropbear
 
+# /etc/resolv.conf is written by udhcpc at runtime; symlink it to /tmp
+ln -sf /tmp/resolv.conf $ROOTFS/etc/resolv.conf
+
 # Required directories
 mkdir -p $ROOTFS/{proc,sys,dev,tmp,root,mnt/newroot}
 ln -sf bin/busybox $ROOTFS/linuxrc

@@ -3,6 +3,13 @@ case "$1" in
     bound|renew)
         ifconfig $interface $ip netmask $subnet
         [ -n "$router" ] && route add default gw $router
+        # Write DNS servers from DHCP into resolv.conf
+        if [ -n "$dns" ]; then
+            printf '' > /etc/resolv.conf
+            for server in $dns; do
+                echo "nameserver $server" >> /etc/resolv.conf
+            done
+        fi
         ;;
     deconfig)
         ifconfig $interface 0.0.0.0
