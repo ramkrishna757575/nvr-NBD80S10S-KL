@@ -1,7 +1,10 @@
 name: Build NVR Firmware
 
 on:
-  workflow_dispatch: # manual trigger only — run from the Actions UI
+  push:
+    branches:
+      - master
+  workflow_dispatch: # also allow manual trigger from the Actions UI
 
 jobs:
   build:
