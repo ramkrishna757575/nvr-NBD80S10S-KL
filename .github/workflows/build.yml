@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     permissions:
-      contents: write   # needed to create/update the rolling release
+      contents: write # needed to create/update the rolling release
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────────
