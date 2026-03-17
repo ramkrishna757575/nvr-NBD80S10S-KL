@@ -38,7 +38,3 @@ echo " Boot (flash) successful!    "
 echo "=============================="
 echo ""
 dropbear -R -p 22
-
-
-# Spawn a shell on UART console (this keeps PID 1 alive too)
-exec /sbin/getty -L ttyS0 115200 vt100
