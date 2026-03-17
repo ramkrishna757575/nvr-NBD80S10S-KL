@@ -136,6 +136,8 @@ cp -a $BUILD_DIR/busybox/_install/* $ROOTFS/
 
 # Overlay: our config files
 cp -a $SCRIPT_DIR/rootfs-overlay/* $ROOTFS/
+# Ensure scripts in usr/sbin are executable (git may strip the bit)
+chmod +x $ROOTFS/usr/sbin/fw-update
 
 # Dropbear binaries
 mkdir -p $ROOTFS/usr/sbin $ROOTFS/usr/bin
