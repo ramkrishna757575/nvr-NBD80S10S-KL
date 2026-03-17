@@ -57,6 +57,11 @@ sf erase 0x440000 0xBC0000
 sf write 0x22000000 0x440000 ${filesize}
 ```
 
+## Single line command for U-Boot console
+```
+setenv serverip 192.168.1.X;tftpboot 0x22000000 uImage-chenxing;sf probe 0; sf lock 0;sf erase 0x50000 0x3F0000;sf write 0x22000000 0x50000 ${filesize};tftpboot 0x22000000 user-x.squashfs.img;sf erase 0x440000 0xBC0000;sf write 0x22000000 0x440000 ${filesize};run loadromfs
+```
+
 ## Boot behaviour
 
 - **No USB drive**: boots from flash (read-only)
