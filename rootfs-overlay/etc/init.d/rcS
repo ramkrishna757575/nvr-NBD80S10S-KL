@@ -38,3 +38,6 @@ echo " Boot (flash) successful!    "
 echo "=============================="
 echo ""
 dropbear -R -p 22
+
+# Hand PID 1 over to BusyBox init so it can handle respawn, reboot and shutdown.
+exec /sbin/init
