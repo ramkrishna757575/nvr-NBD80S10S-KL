@@ -1,0 +1,47 @@
+#!/bin/sh
+# fw-update — download and flash the latest firmware from GitHub, then reboot.
+# Usage: fw-update [kernel|rootfs|all]   (default: all)
+set -e
+
+REPO="ramkrishna757575/nvr-NBD80S10S-KL"
+BASE="https://github.com/$REPO/releases/download/firmware-latest"
+TARGET=${1:-all}
+
+need_kernel=0
+need_rootfs=0
+case "$TARGET" in
+    kernel) need_kernel=1 ;;
+    rootfs) need_rootfs=1 ;;
+    all)    need_kernel=1; need_rootfs=1 ;;
+    *)
+        echo "Usage: fw-update [kernel|rootfs|all]"
+        exit 1
+        ;;
+esac
+
+echo "=== NVR Firmware Updater ==="
+
+if [ $need_kernel -eq 1 ]; then
+    echo "Downloading kernel..."
+    wget --no-check-certificate -q -O /tmp/fw-kernel.img "$BASE/uImage-chenxing"
+fi
+
+if [ $need_rootfs -eq 1 ]; then
+    echo "Downloading rootfs..."
+    wget --no-check-certificate -q -O /tmp/fw-rootfs.img "$BASE/user-x.squashfs.img"
+fi
+
+if [ $need_kernel -eq 1 ]; then
+    echo "Flashing kernel to /dev/mtd1..."
+    flashcp -v /tmp/fw-kernel.img /dev/mtd1
+    rm -f /tmp/fw-kernel.img
+fi
+
+if [ $need_rootfs -eq 1 ]; then
+    echo "Flashing rootfs to /dev/mtd2..."
+    flashcp -v /tmp/fw-rootfs.img /dev/mtd2
+    rm -f /tmp/fw-rootfs.img
+fi
+
+echo "Done. Rebooting..."
+reboot

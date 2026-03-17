@@ -10,6 +10,8 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    permissions:
+      contents: write   # needed to create/update the rolling release
 
     steps:
       # ── Checkout ─────────────────────────────────────────────────────────────
@@ -107,3 +109,27 @@ jobs:
           path: output/usb-rootfs.tar.gz
           if-no-files-found: error
           retention-days: 30
+
+      # ── Rolling 'latest' release ──────────────────────────────────────────────
+      # Keeps a single public 'latest' release whose assets are always the most
+      # recent successful build. The board's fw-update script downloads from here.
+      - name: Publish latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES="Built from [\`${GITHUB_SHA:0:7}\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA) on $(date -u '+%Y-%m-%d %H:%M UTC')"
+          TITLE="Latest build — $(date -u '+%Y-%m-%d %H:%M UTC')"
+          if gh release view firmware-latest &>/dev/null; then
+            gh release edit firmware-latest --title "$TITLE" --notes "$NOTES"
+            gh release upload firmware-latest \
+              output/uImage-chenxing \
+              output/user-x.squashfs.img \
+              --clobber
+          else
+            gh release create firmware-latest \
+              --title "$TITLE" \
+              --notes "$NOTES" \
+              --prerelease \
+              output/uImage-chenxing \
+              output/user-x.squashfs.img
+          fi
