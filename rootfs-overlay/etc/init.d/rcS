@@ -30,6 +30,13 @@ done
 
 echo "No USB rootfs found, booting from flash..."
 ifconfig eth0 up
+echo "Waiting for eth0 link..."
+for i in 1 2 3 4 5; do
+    if grep -q "1" /sys/class/net/eth0/carrier 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
 udhcpc -i eth0
 echo ""
 echo "=============================="
