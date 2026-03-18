@@ -23,7 +23,7 @@ echo "=== NVR Firmware Updater ==="
 
 echo "Fetching version info..."
 VERSION=$(wget --no-check-certificate -q -O - "$BASE/version" 2>/dev/null) || VERSION="unknown"
-echo "Firmware version: $VERSION"
+echo "Built from $VERSION"
 
 if [ $need_kernel -eq 1 ]; then
     echo "Downloading kernel..."

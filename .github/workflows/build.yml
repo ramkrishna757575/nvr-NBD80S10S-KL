@@ -102,7 +102,8 @@ jobs:
             output/user-x.squashfs.img
 
       - name: Write and publish version file
-        run: echo "${{ github.sha }}" > output/version
+        run: |
+          echo "$(echo ${{ github.sha }} | cut -c1-7) on $(date -u '+%Y-%m-%d %H:%M UTC')" > output/version
 
       - name: Add version file to release
         uses: softprops/action-gh-release@v2
