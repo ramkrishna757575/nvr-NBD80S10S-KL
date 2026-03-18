@@ -87,16 +87,28 @@ jobs:
 
       # ── Artifacts ─────────────────────────────────────────────────────────────
       # Flash images and kernel – ready to TFTP-flash via U-Boot
-      - name: Upload flash images
-        uses: actions/upload-artifact@v4
+      # ── Rolling GitHub Release ────────────────────────────────────────────────
+      # Publishes (or overwrites) the "firmware-latest" release so fw-update
+      # can wget the images directly from the device.
+      - name: Publish firmware-latest release
+        uses: softprops/action-gh-release@v2
         with:
-          name: nvr-firmware-${{ github.sha }}
-          path: |
+          tag_name: firmware-latest
+          name: "Latest Firmware"
+          body: "Commit: ${{ github.sha }}"
+          prerelease: true
+          files: |
             output/uImage-chenxing
-            output/romfs-x.squashfs.img
             output/user-x.squashfs.img
-          if-no-files-found: error
-          retention-days: 30
+
+      - name: Write and publish version file
+        run: echo "${{ github.sha }}" > output/version
+
+      - name: Add version file to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: firmware-latest
+          files: output/version
 
       # USB rootfs directory – tar it first so permissions/symlinks are preserved
       - name: Package USB rootfs
