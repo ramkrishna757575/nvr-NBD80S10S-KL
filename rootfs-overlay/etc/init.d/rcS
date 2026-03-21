@@ -50,7 +50,7 @@ dropbear -R -p 22
 # -------------------------------------------------------
 # NAS: Mount USB SSD and start file-sharing services
 # -------------------------------------------------------
-NAS_MOUNT=/tmp/nas  # /tmp is tmpfs (always writable, even on read-only flash boot)
+NAS_MOUNT=/mnt/nas  # pre-exists in squashfs (rootfs-overlay/mnt/nas) - no RAM overhead
 NAS_DEV=""
 
 echo "Looking for NAS SSD..."
@@ -60,7 +60,6 @@ for dev in /dev/sda1 /dev/sdb1 /dev/sda2 /dev/sdb2; do
         if grep -q "$dev" /proc/mounts 2>/dev/null; then
             continue
         fi
-        mkdir -p "$NAS_MOUNT"
         if mount "$dev" "$NAS_MOUNT" 2>/dev/null; then
             NAS_DEV="$dev"
             echo "NAS drive mounted: $dev -> $NAS_MOUNT"
@@ -92,7 +91,7 @@ echo "<html><head><title>NVR NAS</title>"
 echo "<style>body{font-family:monospace;background:#111;color:#0f0;padding:20px}</style>"
 echo "</head><body>"
 echo "<h2>NVR NAS File Browser</h2><pre>"
-ls -lh ${NAS_MOUNT}/files/
+ls -lh "${NAS_MOUNT}/files/"
 echo "</pre></body></html>"
 CGEOF
             chmod +x "$NAS_MOUNT/www/index.cgi"
