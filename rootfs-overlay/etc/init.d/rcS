@@ -50,7 +50,7 @@ dropbear -R -p 22
 # -------------------------------------------------------
 # NAS: Mount USB SSD and start file-sharing services
 # -------------------------------------------------------
-NAS_MOUNT=/mnt/nas
+NAS_MOUNT=/tmp/nas  # /tmp is tmpfs (always writable, even on read-only flash boot)
 NAS_DEV=""
 
 echo "Looking for NAS SSD..."
@@ -82,9 +82,9 @@ if [ -n "$NAS_DEV" ]; then
     # Start HTTP file browser (BusyBox built-in httpd)
     if command -v httpd >/dev/null 2>&1; then
         mkdir -p "$NAS_MOUNT/www"
-        # Generate a simple CGI directory listing page
+        # Generate a simple CGI directory listing page (unquoted CGEOF lets ${NAS_MOUNT} expand)
         if [ ! -f "$NAS_MOUNT/www/index.cgi" ]; then
-            cat > "$NAS_MOUNT/www/index.cgi" << 'CGEOF'
+            cat > "$NAS_MOUNT/www/index.cgi" << CGEOF
 #!/bin/sh
 echo "Content-type: text/html"
 echo ""
@@ -92,7 +92,7 @@ echo "<html><head><title>NVR NAS</title>"
 echo "<style>body{font-family:monospace;background:#111;color:#0f0;padding:20px}</style>"
 echo "</head><body>"
 echo "<h2>NVR NAS File Browser</h2><pre>"
-ls -lh /mnt/nas/files/
+ls -lh ${NAS_MOUNT}/files/
 echo "</pre></body></html>"
 CGEOF
             chmod +x "$NAS_MOUNT/www/index.cgi"
@@ -103,7 +103,14 @@ CGEOF
 
     # Export NFS share (requires CONFIG_NFSD=y in kernel)
     if [ -d /proc/fs/nfsd ] || modprobe nfsd 2>/dev/null; then
-        echo "$NAS_MOUNT/files *(rw,sync,no_subtree_check,no_root_squash)" > /etc/exports
+        EXPORTS_LINE="$NAS_MOUNT/files *(rw,sync,no_subtree_check,no_root_squash)"
+        if ! echo "$EXPORTS_LINE" > /etc/exports 2>/dev/null; then
+            # /etc is read-only (flash boot) - write to tmpfs and bind-mount over /etc/exports
+            echo "$EXPORTS_LINE" > /tmp/nfs_exports
+            if ! mount --bind /tmp/nfs_exports /etc/exports 2>/dev/null; then
+                echo "Warning: could not write /etc/exports, NFS export skipped"
+            fi
+        fi
         if command -v exportfs >/dev/null 2>&1; then
             exportfs -ra
             echo "NFS export configured: $NAS_MOUNT/files"
