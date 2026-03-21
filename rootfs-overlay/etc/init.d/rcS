@@ -47,5 +47,81 @@ echo "=============================="
 echo ""
 dropbear -R -p 22
 
+# -------------------------------------------------------
+# NAS: Mount USB SSD and start file-sharing services
+# -------------------------------------------------------
+NAS_MOUNT=/mnt/nas
+NAS_DEV=""
+
+echo "Looking for NAS SSD..."
+for dev in /dev/sda1 /dev/sdb1 /dev/sda2 /dev/sdb2; do
+    if [ -b "$dev" ]; then
+        # Skip any device already used as pivot-root
+        if grep -q "$dev" /proc/mounts 2>/dev/null; then
+            continue
+        fi
+        mkdir -p "$NAS_MOUNT"
+        if mount "$dev" "$NAS_MOUNT" 2>/dev/null; then
+            NAS_DEV="$dev"
+            echo "NAS drive mounted: $dev -> $NAS_MOUNT"
+            break
+        fi
+    fi
+done
+
+if [ -n "$NAS_DEV" ]; then
+    # Create default storage directory
+    mkdir -p "$NAS_MOUNT/files"
+
+    # Start FTP server (BusyBox built-in, read-write access)
+    if command -v tcpsvd >/dev/null 2>&1 && command -v ftpd >/dev/null 2>&1; then
+        tcpsvd -E 0.0.0.0 21 ftpd -w "$NAS_MOUNT/files" &
+        echo "FTP server started on port 21 (root: $NAS_MOUNT/files)"
+    fi
+
+    # Start HTTP file browser (BusyBox built-in httpd)
+    if command -v httpd >/dev/null 2>&1; then
+        mkdir -p "$NAS_MOUNT/www"
+        # Generate a simple CGI directory listing page
+        if [ ! -f "$NAS_MOUNT/www/index.cgi" ]; then
+            cat > "$NAS_MOUNT/www/index.cgi" << 'CGEOF'
+#!/bin/sh
+echo "Content-type: text/html"
+echo ""
+echo "<html><head><title>NVR NAS</title>"
+echo "<style>body{font-family:monospace;background:#111;color:#0f0;padding:20px}</style>"
+echo "</head><body>"
+echo "<h2>NVR NAS File Browser</h2><pre>"
+ls -lh /mnt/nas/files/
+echo "</pre></body></html>"
+CGEOF
+            chmod +x "$NAS_MOUNT/www/index.cgi"
+        fi
+        httpd -p 8080 -h "$NAS_MOUNT/www" &
+        echo "HTTP file browser started on port 8080"
+    fi
+
+    # Export NFS share (requires CONFIG_NFSD=y in kernel)
+    if [ -d /proc/fs/nfsd ] || modprobe nfsd 2>/dev/null; then
+        echo "$NAS_MOUNT/files *(rw,sync,no_subtree_check,no_root_squash)" > /etc/exports
+        if command -v exportfs >/dev/null 2>&1; then
+            exportfs -ra
+            echo "NFS export configured: $NAS_MOUNT/files"
+        fi
+    fi
+
+    echo ""
+    echo "=============================="
+    echo " NAS services running         "
+    echo " FTP  : port 21               "
+    echo " HTTP : port 8080             "
+    echo " SSH  : port 22 (sftp works)  "
+    echo " NAS  : $NAS_MOUNT            "
+    echo "=============================="
+else
+    echo "No NAS SSD found, skipping NAS services."
+fi
+# -------------------------------------------------------
+
 # Hand PID 1 over to BusyBox init so it can handle respawn, reboot and shutdown.
 exec /sbin/init
