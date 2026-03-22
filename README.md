@@ -80,7 +80,7 @@ sudo umount /mnt
 ## SSH access
 
 Dropbear is configured for **password authentication**. The default `root` password
-is empty — set one by editing `rootfs-overlay/etc/shadow` before building (replace
+is `root` — set one by editing `rootfs-overlay/etc/shadow` before building (replace
 the empty hash field with a crypt hash), or run `passwd root` on the device after
 first boot.
 
