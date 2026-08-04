@@ -1,5 +1,12 @@
+# ── Build trees and outputs ──────────────────────────────────────────────────
+# build/ holds everything fetched or unpacked: the SigmaStar SDK, toolchains,
+# BusyBox, the RTL8812AU driver, the Alkaid SDK and the vendor firmware dumps.
+# All of it is reproducible from build-sdk.sh, and it runs to several GB.
 build/
 output/
+logs/
+
+# ── Legacy linux-chenxing 6.5 track ──────────────────────────────────────────
 linux-chenxing/
 busybox-1.36.1/
 busybox-1.36.1.tar.bz2
@@ -11,7 +18,17 @@ romfs/
 rootfs/
 squashfs-root/
 uImage-chenxing
+
+# ── Firmware blobs ───────────────────────────────────────────────────────────
+# Covers NBD80S10S-KL_original.bin, the 16MB stock flash dump. Keep a copy
+# OUTSIDE the repo: it is the only route back to stock, and the only recovery
+# from a bad write below 0x50000 short of a SPI programmer.
 *.bin
 *.sqfs
 *.img
 current_state.bin
+
+# ── Local scratch ────────────────────────────────────────────────────────────
+.venv/
+screenlog*
+*.log

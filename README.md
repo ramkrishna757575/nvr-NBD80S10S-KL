@@ -1,94 +1,219 @@
-# NVR NBD80S10S-KL Custom Linux Firmware
+# NVR NBD80S10S-KL — OpenIPC Ground Station Firmware
 
-Custom Linux firmware for the NBD80S10S-KL NVR board based on the
-SigmaStar/MStar SSR621Q (Infinity2M) SoC.
+Custom firmware that turns a XiongMai NBD80S10S-KL NVR board into a wireless FPV
+ground station: it receives video from an OpenIPC air unit, decodes it in
+hardware, and puts it on the HDMI output.
+
+**Status: working.** Boots standalone from flash, no PC required.
 
 ## Hardware
 
-- **SoC**: SigmaStar SSR621Q (Dual-core ARM Cortex-A7 @ 1GHz)
-- **RAM**: 256MB DDR3
-- **Flash**: 16MB NOR SPI (XM25QH128C)
-- **Interfaces**: Ethernet, SATA, USB 2.0, UART
+| | |
+| --- | --- |
+| SoC | SigmaStar SSR621Q (MStar Infinity2M), dual Cortex-A7 @ 1 GHz |
+| RAM | 256 MB DDR3 |
+| Flash | 16 MB NOR SPI (XM25QH128C) |
+| VPU | Chips&Media Wave511 (H.264 / H.265 decode) |
+| Board ID | `INFINITY2M SSC010A-S01A-S` |
+| Wi-Fi | RTL8812AU over USB (must use the port that enumerates as `Sstar-ehci-3`) |
 
-## What this builds
+## What it does
 
-- Linux 6.5 kernel (linux-chenxing fork)
-- BusyBox 1.36.1 userspace
-- Dropbear SSH server
-- Two flash images for the NVR board
-- A USB rootfs for persistent writable storage
+```
+RTL8812AU ──► wpa_supplicant ──► DHCP ──► RTSP client ──► MI_VDEC (Wave511)
+                                                              │
+                                            HDMI ◄── MI_DISP ◄┴─ MI_DIVP
+```
 
-## Prerequisites
+- Associates to the air unit's access point, then pulls its RTSP stream
+- Hardware-decodes H.264 or H.265 — codec is taken from the SDP, not guessed
+- Composites onto the HDMI video plane at 1080p60
+- Fully event-driven: the player starts on the DHCP lease and stops on link
+  loss, with a splash screen in between. No polling, no fixed delays.
+- Reconnects by itself if the air unit reboots or drifts out of range
+
+## Building
+
+Everything is fetched and built by one script. Expect a long first run.
 
 ```bash
-sudo apt install gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
-    libncurses-dev bc bison flex libssl-dev u-boot-tools \
-    squashfs-tools make gcc git wget
+./build-sdk.sh
 ```
 
-## Build
+Output is `output/uImage-sdk` — a single ~11 MB uImage with the kernel and an
+embedded initramfs. The script prints the exact flashing commands for the image
+it just built, and fails if the image would no longer fit in flash.
+
+Useful variables:
+
+| | |
+| --- | --- |
+| `MI_SETS="xm"` | Which MI module sets to ship. Default `xm`, the only set that both decodes and drives HDMI. Use `MI_SETS="xm alkaid"` to bisect driver problems again. |
+
+`build-wfb.sh` builds the wfb-ng binaries and `build-apfpv.sh` the Wi-Fi client
+pieces; `build-sdk.sh` picks up their output automatically if present.
+
+## Flashing
+
+The stock layout, read from the vendor dump and confirmed by the stock
+`bootargs`:
+
+| Offset | Size | Contents | |
+| --- | --- | --- | --- |
+| `0x000000` | 64 K | IPL + IPL_CUST | keep |
+| `0x010000` | 192 K | U-Boot | keep |
+| `0x040000` | 64 K | U-Boot environment | keep — `saveenv` writes here |
+| `0x050000` | 15.7 M | stock kernel + rootfs | **replaced by our image** |
+
+> **`sf lock 0` is mandatory.** The flash ships with block protection armed —
+> U-Boot prints `lk=>6, 0x800000`, meaning the lower 8 MB is write protected.
+> SPI flash silently ignores erase and program to protected sectors, so
+> `sf erase` and `sf write` both report `OK` while nothing is written. Despite
+> the name, `sf lock 0` sets lock *level 0*, i.e. unlocks everything.
+
+```
+tftpboot 0x21000000 uImage-sdk
+sf probe 0
+sf lock 0
+sf erase 0x50000 0xb00000
+sf write 0x21000000 0x50000 ${filesize}
+```
+
+Verify before making it permanent — this reads back from flash rather than
+trusting the copy still in RAM:
+
+```
+sf read 0x21000000 0x50000 0xb00000
+bootm 0x21000000
+```
+
+Then:
+
+```
+setenv bootcmd 'gpio output 25 1;sf probe 0;sf read 0x21000000 0x50000 0xb00000;bootm 0x21000000'
+setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080
+setenv bootdelay 3
+saveenv
+```
+
+`gpio output 25 1` is the first thing the stock `bootcmd` does. Its purpose is
+undocumented, so it is kept. `bootdelay 3` replaces the stock `0`, which is why
+the prompt used to be nearly impossible to catch.
+
+## Kernel command line options
+
+| Option | Meaning |
+| --- | --- |
+| `mi_set=xm\|sdk\|alkaid` | MI module set. Default `xm`. Sets cannot be swapped at runtime — the modules oops on `rmmod`. |
+| `vdec_test=1` | Start the player from init instead of dropping to a shell |
+| `vdec_test_rtsp=1` | Pull RTSP from the DHCP gateway using OpenIPC defaults |
+| `vdec_test_rtsp=URL` | Explicit `rtsp://user:pass@host:port/path` |
+| `vdec_test_file=1` | Decode the bundled clip instead — no network, no RTP |
+| `vdec_test_src=WxH` | Source resolution hint (default `1280x720`) |
+| `vdec_test_probe=1` | Dump the VPU bitstream buffer and the driver-side ES |
+| `vdec_test_log=N` | `mi_vdec` log level |
+| `apfpv=off` | Do not start the Wi-Fi client |
+| `apfpv_ssid=`, `apfpv_psk=` | Air unit credentials (default `OpenIPC` / `12345678`) |
+| `disp=720\|off` | Display mode |
+
+## On the device
+
+| | |
+| --- | --- |
+| `fpv-start` / `fpv-stop` | Start or stop the player by hand |
+| `fpv-probe [ip]` | Identify a camera's stream: port scan plus RTSP `DESCRIBE` |
+| `load-mi <set>` | Insert an MI module set |
+| `load-wifi` | Load the RTL8812AU driver |
+| `apfpv <ssid> <psk>` | Associate to an access point |
+| `wfb-nics` | List RTL88xx interfaces |
+| `mi-player` | The player; `-h` for options |
+
+**UART RX does not work under Linux** (TX only) — the SigmaStar serial driver
+never delivers input. U-Boot's RX is fine. Use telnet on `192.168.1.10` for an
+interactive shell.
+
+## Air unit
+
+Tested against OpenIPC/majestic, which answers `DESCRIBE` with
+`Server: OpenIPC.org RTSP Server/0.1` and Basic auth, streaming H.265 at
+payload type 97. Default credentials are `root` / `12345`.
+
+Majestic sends nothing until a client completes `DESCRIBE` → `SETUP` → `PLAY`,
+which is why a bare UDP listener stays silent and `mi-player` implements a small
+RTSP client. Alternatively, point majestic's `outgoing.server` at the board and
+use `mi-player -u 5600`.
+
+## Gotchas worth knowing
+
+- **Test streams must be 8-bit 4:2:0.** `videotestsrc ! x264enc` with no
+  `format=` in the caps negotiates **10-bit 4:4:4** (`profile_idc 244`), which
+  no hardware decoder will touch. The decoder reports this as
+  `not found sps` — meaning no *usable* SPS, not a missing one. Always pin
+  `video/x-raw,format=I420` and a `video/x-h264,profile=main` filter.
+- **The VPU firmware is a file**, loaded from `/config/vdec_fw/` at runtime and
+  versioned with the driver. `load-mi` installs each set's own copy before
+  `insmod`. `fwVersion` in `/proc/mi_modules/mi_vdec/mi_vdec0` confirms which.
+- **The OSD sits above the video plane** at constant alpha 255, so the splash
+  hides decoded frames until the framebuffer is cleared.
+- **`/tmp` is RAM.** It is capped at 8 MB; unbounded writes previously triggered
+  the OOM killer and took telnet with them.
+- **MI modules cannot be unloaded.** `rmmod` oopses the kernel; choose the set
+  at boot instead.
+
+## Repository layout
+
+```
+build-sdk.sh        main build: kernel, initramfs, MI stack, players
+build-wfb.sh        wfb-ng binaries
+build-apfpv.sh      wpa_supplicant and Wi-Fi client pieces
+src/mi-player.c     RTSP/UDP/file -> MI_VDEC -> MI_DIVP -> MI_DISP -> HDMI
+src/mi-disp-init.c  display and HDMI bring-up, raw MI_HDMI ioctls
+src/fb-splash.c     framebuffer splash and status overlay
+src/wifi-monitor.c  monitor mode and sniffing, no external dependencies
+assets/test720.h264 720p Baseline 4:2:0 clip for decoding without a network
+config/             BusyBox and kernel configuration
+patches/            device tree and platform patches
+```
+
+Regenerate the test clip with:
 
 ```bash
-./build.sh
+gst-launch-1.0 videotestsrc num-buffers=90 pattern=ball ! \
+  video/x-raw,format=I420,width=1280,height=720,framerate=30/1 ! \
+  x264enc tune=zerolatency speed-preset=ultrafast key-int-max=15 bitrate=3000 ! \
+  video/x-h264,stream-format=byte-stream,alignment=au,profile=main ! \
+  filesink location=assets/test720.h264
 ```
 
-Output files will be in `output/`.
+## Recovery
 
-## Flash layout
+Nothing in the flashing procedure touches `0x0`–`0x50000`, so U-Boot and its
+environment survive even a failed write, and TFTP boot always remains available.
 
-| Partition | Offset   | Size   | Contents                              |
-| --------- | -------- | ------ | ------------------------------------- |
-| ipl       | 0x000000 | 64KB   | First stage bootloader (do not touch) |
-| boot      | 0x010000 | 256KB  | U-Boot                                |
-| kernel    | 0x050000 | 3.9MB  | Linux kernel + DTB                    |
-| rootfs    | 0x440000 | 11.8MB | BusyBox rootfs                        |
-
-## Flashing via U-Boot TFTP
+Full restore to stock, if you kept the 16 MB dump:
 
 ```
-setenv serverip 192.168.1.X
-tftpboot 0x22000000 uImage-chenxing
-sf probe 0; sf lock 0
-sf erase 0x50000 0x3F0000
-sf write 0x22000000 0x50000 ${filesize}
-
-tftpboot 0x22000000 user-x.squashfs.img
-sf erase 0x440000 0xBC0000
-sf write 0x22000000 0x440000 ${filesize}
+tftpboot 0x21000000 NBD80S10S-KL_original.bin
+sf probe 0
+sf lock 0
+sf erase 0 0x1000000
+sf write 0x21000000 0 0x1000000
 ```
 
-## Single line command for U-Boot console
-```
-setenv serverip 192.168.1.X;tftpboot 0x22000000 uImage-chenxing;sf probe 0; sf lock 0;sf erase 0x50000 0x3F0000;sf write 0x22000000 0x50000 ${filesize};tftpboot 0x22000000 user-x.squashfs.img;sf erase 0x440000 0xBC0000;sf write 0x22000000 0x440000 ${filesize};run loadromfs
-```
+The only unrecoverable failure is corrupting the bootloader itself, which needs
+a SPI flash programmer.
 
-## Boot behaviour
+## Legacy
 
-- **No USB drive**: boots from flash (read-only)
-- **USB drive with valid rootfs**: automatically pivots to USB (writable)
-
-## Setting up USB boot drive
-
-```bash
-sudo mkfs.ext4 -F /dev/sdX1
-sudo mount /dev/sdX1 /mnt
-sudo cp -a output/usb-rootfs/* /mnt/
-sudo chown -R root:root /mnt/root
-sudo umount /mnt
-```
-
-## SSH access
-
-Dropbear is configured for **password authentication**. The default `root` password
-is `root` — set one by editing `rootfs-overlay/etc/shadow` before building (replace
-the empty hash field with a crypt hash), or run `passwd root` on the device after
-first boot.
-
-SSH host keys are generated automatically on first boot and stored in `/tmp/dropbear/`
-(lost on reboot — clients will see a new host key each time unless you persist them
-to a writable volume).
+`build.sh`, `usb-rootfs/`, `rootfs-overlay/` and `.github/workflows/build.yml`
+belong to an earlier attempt using the linux-chenxing 6.5 kernel. That track was
+abandoned: mainline has no display or VPU support for Infinity2M, so HDMI is
+dead there. They are kept for reference only and are not built by
+`build-sdk.sh`.
 
 ## Credits
 
-- [linux-chenxing](https://github.com/linux-chenxing/linux) - kernel support
-- [Discussion #85](https://github.com/linux-chenxing/linux-chenxing.org/discussions/85) - NVR board research
+- [linux-chenxing](https://github.com/linux-chenxing/linux) — Infinity2M research
+- [Discussion #85](https://github.com/linux-chenxing/linux-chenxing.org/discussions/85) — NVR board teardown
+- [OpenIPC](https://openipc.org/) — air unit firmware and wfb-ng
+- [industio/PurPle-Pi-R1](https://github.com/industio/PurPle-Pi-R1) — Alkaid SDK drop used during driver debugging
