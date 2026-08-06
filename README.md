@@ -64,8 +64,8 @@ it just built, and fails if the image would no longer fit in flash.
 ### Prebuilt images
 
 The **Full image** workflow builds a flashable `uImage-sdk` and attaches it to
-the run as an artifact. It is manual: run it from the Actions tab when you want
-an image, rather than on every push.
+the run as an artifact, on every push to `master` and on demand from the Actions
+tab. Artifacts are kept 30 days.
 
 No private key is baked into a published image — SSH host keys are generated on
 the board's first boot and kept in flash. Root's password is the documented

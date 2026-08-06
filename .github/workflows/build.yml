@@ -13,10 +13,10 @@ on:
 # into the initramfs.
 #
 # 'firmware' builds a flashable image and uploads it as a run artifact. It runs
-# on manual dispatch only -- images are cut when you want one, not on every
-# push. The proprietary XiongMai modules and /config tables it needs are
-# committed under vendor/, the same approach OpenIPC takes with its SigmaStar
-# blobs, so no dump and no secret is required.
+# on every push to master and on manual dispatch, but not on pull requests. The
+# proprietary XiongMai modules and /config tables it needs are committed under
+# vendor/, the same approach OpenIPC takes with its SigmaStar blobs, so no dump
+# and no secret is required.
 #
 # Publishing the image is safe from a secrets point of view: host keys are
 # generated on the board's first boot and kept in flash, so no private key is
@@ -110,9 +110,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     needs: validate
-    # Manual only. Run it from the Actions tab when you want an image; the
-    # artifact then hangs off that run.
-    if: github.event_name == 'workflow_dispatch'
+    # Every push to master, plus manual runs from the Actions tab. Not on pull
+    # requests: an image per PR would burn 40 minutes a push for something
+    # nobody flashes.
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
 
