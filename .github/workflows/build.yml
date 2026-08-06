@@ -31,11 +31,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # libc6-dev-armhf-cross is only a Recommends of the cross compiler, so
+      # --no-install-recommends leaves it out and gcc silently falls back to the
+      # host /usr/include -- where bits/libc-header-start.h is under
+      # x86_64-linux-gnu/ and cannot be found.
       - name: Install ARM cross toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf busybox-static
+            gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
+            libc6-dev-armhf-cross busybox-static
+          arm-linux-gnueabihf-gcc -print-sysroot || true
+          echo '#include <stdio.h>' > /tmp/t.c
+          echo 'int main(void){return 0;}' >> /tmp/t.c
+          arm-linux-gnueabihf-gcc -o /tmp/t /tmp/t.c
+          echo "target libc headers OK"
 
       # Only the MI headers, not the whole ~2GB SDK.
       - name: Fetch MI headers from the SigmaStar SDK
@@ -128,6 +138,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
+            libc6-dev-armhf-cross \
             build-essential bc bison flex libssl-dev u-boot-tools \
             cpio xz-utils lzop squashfs-tools device-tree-compiler \
             rsync wget openssl
