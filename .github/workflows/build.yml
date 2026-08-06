@@ -8,20 +8,19 @@ on:
 
 # Two jobs.
 #
-# 'validate' always runs and needs nothing private: it cross-compiles every
-# source file for ARM against the public SigmaStar headers and syntax-checks
-# every script, including the ones generated into the initramfs.
+# 'validate' cross-compiles every source file for ARM against the public
+# SigmaStar headers and syntax-checks every script, including the ones generated
+# into the initramfs.
 #
-# 'firmware' builds a real image, and only runs if VENDOR_DEPLOY_KEY is set --
-# a read-only deploy key for the private repository holding the board's flash
-# dump. The XiongMai kernel modules, /config panel tables and libraries are
-# carved out of that dump and are proprietary.
+# 'firmware' builds a flashable image and uploads it as a run artifact. It runs
+# on manual dispatch only -- images are cut when you want one, not on every
+# push. The proprietary XiongMai modules and /config tables it needs are
+# committed under vendor/, the same approach OpenIPC takes with its SigmaStar
+# blobs, so no dump and no secret is required.
 #
-# The image is deliberately NOT uploaded as an artifact. Artifacts of a public
-# repository are downloadable by anyone, so publishing one would redistribute
-# XiongMai's code -- exactly what keeping the dump private avoids. The value
-# here is proving the build completes: linking, initramfs assembly and the
-# flash-size check are things the compile-only job cannot reach.
+# Publishing the image is safe from a secrets point of view: host keys are
+# generated on the board's first boot and kept in flash, so no private key is
+# ever baked in. Root's password is the documented default.
 
 jobs:
   validate:
@@ -109,31 +108,15 @@ jobs:
   firmware:
     name: Full image
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     needs: validate
+    # Manual only. Run it from the Actions tab when you want an image; the
+    # artifact then hangs off that run.
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
 
-      # The secrets context cannot be used in a job-level 'if', so gate the
-      # steps instead. Forked pull requests never receive secrets, so this also
-      # makes them skip cleanly rather than fail.
-      - name: Is a vendor deploy key configured?
-        id: gate
-        env:
-          KEY: ${{ secrets.VENDOR_DEPLOY_KEY }}
-        run: |
-          if [ -n "$KEY" ]; then
-            echo "have=yes" >> "$GITHUB_OUTPUT"
-          else
-            echo "have=no" >> "$GITHUB_OUTPUT"
-            echo "VENDOR_DEPLOY_KEY not set -- skipping the image build."
-            echo "Add a read-only deploy key for the private vendor repo to"
-            echo "enable it. The validate job above already covers everything"
-            echo "that does not need proprietary blobs."
-          fi
-
       - name: Install build dependencies
-        if: steps.gate.outputs.have == 'yes'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
@@ -141,42 +124,49 @@ jobs:
             libc6-dev-armhf-cross \
             build-essential bc bison flex libssl-dev u-boot-tools \
             cpio xz-utils lzop squashfs-tools device-tree-compiler \
-            rsync wget openssl
+            rsync wget openssl pkg-config
 
-      - name: Authorise the private vendor repository
-        if: steps.gate.outputs.have == 'yes'
-        env:
-          KEY: ${{ secrets.VENDOR_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          echo "${{ vars.VENDOR_REPO || 'git@github.com:ramkrishna757575/nvr-NBD80S10S-KL-vendor.git' }}" > .vendor-repo
-
-      - name: Fetch dependencies and vendor blobs
-        if: steps.gate.outputs.have == 'yes'
+      # No flash dump needed: the blobs live in vendor/.
+      - name: Fetch dependencies
         run: ./fetch-deps.sh
 
-      # build-sdk.sh only stages dropbear if it has already been built, so
-      # without this the image would quietly come out with no SSH at all.
-      # apfpv and wfb-ng are left out: they are slow to build and their absence
-      # only makes the reported image size a lower bound.
+      # Each of these is staged by build-sdk.sh only if already built, so
+      # skipping one silently produces an image missing that feature: no SSH
+      # without dropbear, and no drone link at all without apfpv's
+      # wpa_supplicant.
       - name: Build dropbear
-        if: steps.gate.outputs.have == 'yes'
         run: ./build-dropbear.sh
 
+      - name: Build apfpv
+        run: ./build-apfpv.sh
+
+      - name: Build wfb-ng
+        run: ./build-wfb.sh
+
       - name: Build the image
-        if: steps.gate.outputs.have == 'yes'
         run: ./build-sdk.sh
 
-      # Report only. Uploading this would republish the proprietary modules
-      # baked into the initramfs.
-      - name: Report
-        if: steps.gate.outputs.have == 'yes'
+      - name: Package
+        id: pkg
         run: |
-          ls -l output/uImage-sdk
-          md5sum output/uImage-sdk
-          test -x build/dropbear-out/bin/dropbearmulti && echo "dropbear: staged"
-          echo "Image built. Not uploaded: it contains proprietary vendor code."
+          mkdir -p dist
+          cp output/uImage-sdk dist/uImage-sdk
+          (cd dist && sha256sum uImage-sdk > SHA256SUMS)
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "size=$(stat -c%s dist/uImage-sdk)"
+            echo "md5=$(md5sum dist/uImage-sdk | cut -d' ' -f1)"
+          } > dist/BUILDINFO
+          cat dist/BUILDINFO
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # No private key ships in the image -- host keys are generated on the
+      # board's first boot -- so this is safe to publish. Root's password is the
+      # documented default; change it with ROOT_PASSWORD when building your own.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uImage-sdk-${{ steps.pkg.outputs.short }}
+          path: dist/
+          retention-days: 30

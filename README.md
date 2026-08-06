@@ -43,27 +43,33 @@ Output is `output/uImage-sdk` — a single ~11 MB uImage with the kernel and an
 embedded initramfs. The script prints the exact flashing commands for the image
 it just built, and fails if the image would no longer fit in flash.
 
-> **You need a dump of your own board's flash.** The XiongMai kernel modules,
-> the `/config` panel timing tables and the stock libraries are proprietary and
-> are not redistributed here. `fetch-deps.sh` carves them out of a 16 MB dump
-> placed at `NBD80S10S-KL_original.bin` in the repository root (or passed as an
-> argument). You want that dump anyway — it is the only route back to stock.
+> **The proprietary bits are in `vendor/`.** The XiongMai MI kernel modules, the
+> stock `/config` panel timing tables and the uClibc runtime `config_tool` needs
+> are committed there, so a plain clone builds a working image — the same
+> approach [OpenIPC](https://github.com/OpenIPC/firmware) takes with its
+> SigmaStar blobs. See [vendor/README.md](vendor/README.md) for provenance.
+>
+> They are read off a retail board's read-only factory partitions and contain
+> nothing unit-specific: no MAC, no serial, no keys. If you would rather trust
+> your own board, put a 16 MB dump at `NBD80S10S-KL_original.bin` (or pass it as
+> an argument, or point `.vendor-repo` at a private repo holding it) and
+> `fetch-deps.sh` will extract them instead. You want that dump anyway — it is
+> the only route back to stock.
 >
 > Read one off the board from U-Boot with
 > `sf probe 0; sf read 0x21000000 0 0x1000000`, or from a running Linux with the
 > whole chip exposed via `mtdparts=NOR_FLASH:16m(whole)` and
 > `nc <pc> 1234 < /dev/mtd0`.
 
-If you keep the dump in a private repository, point the build at it once and
-`fetch-deps.sh` will clone it for you:
+### Prebuilt images
 
-```bash
-echo 'git@github.com:you/your-vendor-repo.git' > .vendor-repo   # gitignored
-```
+The **Full image** workflow builds a flashable `uImage-sdk` and attaches it to
+the run as an artifact. It is manual: run it from the Actions tab when you want
+an image, rather than on every push.
 
-Any 16 MB `.bin` at the top of that repo is used, so it can keep a
-board-specific name. `VENDOR_REPO=` and `VENDOR_DUMP=` work as one-off
-environment overrides.
+No private key is baked into a published image — SSH host keys are generated on
+the board's first boot and kept in flash. Root's password is the documented
+default; rebuild with `ROOT_PASSWORD='...'` to change it.
 
 The modules are not visible in the extracted squashfs trees: they live inside
 `usr` as `lib/modules.tar.lzma`, which `fetch-deps.sh` unpacks.

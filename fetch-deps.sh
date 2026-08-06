@@ -100,6 +100,20 @@ STOCK_DUMP=${1:-${VENDOR_DUMP:-$SCRIPT_DIR/NBD80S10S-KL_original.bin}}
 # derived from it below, so there is no second copy to keep in sync.
 [ -n "$VENDOR_REPO" ] || VENDOR_REPO=$(cat "$SCRIPT_DIR/.vendor-repo" 2>/dev/null || true)
 
+# The blobs this build needs are committed under vendor/, so a plain clone is
+# enough and nothing below has to run. Extracting from a dump is still offered
+# for anyone who would rather trust their own board than the committed copies.
+if [ -d "$SCRIPT_DIR/vendor/modules" ] && [ ! -f "$STOCK_DUMP" ] \
+   && [ ! -d "$BUILD_DIR/vendor/x_modules/modules" ]; then
+    echo "=== vendor blobs: using the copies committed in vendor/ ==="
+    (cd "$SCRIPT_DIR/vendor" && md5sum -c MD5SUMS >/dev/null 2>&1) \
+        && echo "  checksums OK ($(ls "$SCRIPT_DIR"/vendor/modules/*.ko | wc -l) modules)" \
+        || echo "warning: vendor/MD5SUMS does not match" >&2
+    echo ""
+    echo "ready: run ./build-sdk.sh"
+    exit 0
+fi
+
 if [ ! -f "$STOCK_DUMP" ] && [ ! -d "$BUILD_DIR/vendor/x_modules/modules" ] \
    && [ -n "$VENDOR_REPO" ]; then
     VENDOR_SRC=$BUILD_DIR/vendor-src

@@ -127,7 +127,23 @@ fi
 #            symbols. Only safe because these modules carry no modversions CRCs.
 echo "=== [2/5] Collecting MI modules and libraries ==="
 MI_OUT=$OUTPUT_DIR/sdk-mi
-XM_MODULES=$BUILD_DIR/vendor/x_modules/modules
+
+# Vendor blobs. Prefer the copies committed to this repo so a plain clone
+# builds; fall back to a tree fetch-deps.sh carved out of a flash dump, which is
+# what you want if you would rather trust your own board than these files.
+if [ -d $SCRIPT_DIR/vendor/modules ]; then
+    XM_MODULES=$SCRIPT_DIR/vendor/modules
+    XM_CONFIG=$SCRIPT_DIR/vendor/config
+    XM_LIB=$SCRIPT_DIR/vendor/lib
+    echo "vendor blobs: $SCRIPT_DIR/vendor (committed)"
+else
+    XM_MODULES=$BUILD_DIR/vendor/x_modules/modules
+    XM_CONFIG=$BUILD_DIR/vendor/romfs/config
+    XM_LIB=$BUILD_DIR/vendor/romfs/lib
+    echo "vendor blobs: $BUILD_DIR/vendor (extracted from a dump)"
+fi
+XM_FBDEV_INI=$XM_CONFIG/fbdev.ini
+
 rm -rf $MI_OUT
 mkdir -p $MI_OUT/modules/sdk $MI_OUT/modules/xm \
          $MI_OUT/lib $MI_OUT/include $MI_OUT/config
@@ -210,7 +226,6 @@ cp -a $MPP_DIR/../config/. $MI_OUT/config/ 2>/dev/null \
 
 # fbdev.ko refuses to probe without this; the SDK omits it (panel board), so take
 # the stock XM one, which is already configured for 1280x720 over 1080p timing.
-XM_FBDEV_INI=$BUILD_DIR/vendor/romfs/config/fbdev.ini
 [ -f $XM_FBDEV_INI ] && cp $XM_FBDEV_INI $MI_OUT/config/
 
 # Overlay the ENTIRE stock XM /config on top of the SDK one. Cherry-picking files
@@ -219,7 +234,6 @@ XM_FBDEV_INI=$BUILD_DIR/vendor/romfs/config/fbdev.ini
 # "Not Fund!!!" and MI_DISP_SetPubAttr dies on "Can't find Timing(1080P60)".
 # This also brings board.ini, pq/, model/, misc/ and the correct 256MB mmap.ini
 # (the SDK's is for the 64MB wireless-tag board: LX 0x3f00000 vs our 0xff00000).
-XM_CONFIG=$BUILD_DIR/vendor/romfs/config
 if [ -d $XM_CONFIG ]; then
     cp -a $XM_CONFIG/. $MI_OUT/config/
     # Keep XM's own config_tool. It must match the mi_sys it feeds: the SDK's
@@ -477,7 +491,6 @@ echo "glibc runtime: $(ls $INITRAMFS_DIR/lib/*.so* 2>/dev/null | wc -l) librarie
 # "Get LX_MEM fail in mmap ...." and every timing lookup "Not Fund!!!").
 # Copy explicitly rather than globbing: XM's /lib also has libc.so.6 pointing at
 # uClibc, which would shadow our glibc and break every other binary.
-XM_LIB=$BUILD_DIR/vendor/romfs/lib
 if [ -f $XM_LIB/ld-uClibc-1.0.31.so ]; then
     cp -a $XM_LIB/ld-uClibc-1.0.31.so $XM_LIB/libuClibc-1.0.31.so $INITRAMFS_DIR/lib/
     ln -sf ld-uClibc-1.0.31.so $INITRAMFS_DIR/lib/ld-uClibc.so.1
