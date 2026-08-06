@@ -194,30 +194,64 @@ The MAC comes from U-Boot's `ethaddr`, which only reaches the kernel if bootargs
 are built *inside* `setargs` (U-Boot expands `${}` one level only). Without it
 the board uses the locally administered address cached in `.fallback-mac`.
 
+### Settings
+
+The rootfs is a RAM initramfs, so nothing written at runtime survives a reboot.
+A JFFS2 filesystem on the spare NOR at the top of the chip provides the one
+place that does — mounted at `/mnt/cfg`, formatted automatically on first boot,
+and untouched by reflashing, since the image only covers `0x50000`–`0xb80000`.
+It needs one kernel argument:
+
+```
+mtdparts=NOR_FLASH:512k@0xf80000(cfg)
+```
+
+Everything is configured in `/mnt/cfg/wfb.conf` (symlinked to `/etc/wfb.conf`),
+edited over SSH the same way OpenIPC's overlay works:
+
+```bash
+ssh root@<board>
+vi /mnt/cfg/wfb.conf
+reboot
+```
+
+| | |
+| --- | --- |
+| `mode` | `apfpv` — join the air unit's AP and pull RTSP. `wfb` — wfb-ng monitor mode with FEC |
+| `channel`, `link_id`, `radio_port`, `udp_port` | wfb mode; every one must match the air unit |
+| `key` | wfb key pair, generated on first use if absent |
+| `ssid`, `psk` | apfpv mode |
+| `region` | regulatory domain, two-letter country code |
+
+Precedence is built-in default, then this file, then the kernel command line —
+so `link=`, `apfpv_ssid=`, `apfpv_psk=` and `wifi_cc=` still override it. That
+matters when a bad edit leaves the board unable to see the drone: the command
+line needs no working filesystem.
+
+`apfpv` and `wfb` are mutually exclusive — one needs the adapter in managed
+mode, the other in monitor mode — so exactly one runs, and switching means a
+reboot.
+
+For wfb, `wfb-start` generates a key pair on first use if `key` is missing and
+writes both halves next to it; copy `drone.key` to the air unit as
+`/etc/drone.key`, or `scp` an existing `gs.key` over the top.
+
 ### SSH
 
 Log in as `root` with the password `12345678`, or build with
 `ROOT_PASSWORD='...'` to change it. `SSH_PUBKEY=/path/to/key.pub` adds a key for
 public-key auth; without it the build is password-only.
 
-No private key ships in the image. The rootfs is a RAM initramfs, so anything
-generated at boot would be lost, and a baked-in host key would be shared by every
-board flashed from the same image — and would leak the moment the image did. So
-the board generates its own host keys on first boot and stores them in one erase
-block at the top of flash, which `mtdparts` exposes:
-
-```
-mtdparts=NOR_FLASH:64k@0xff0000(keys)
-```
-
-That block sits inside the stock `mtd` partition at the very top of the chip,
-well clear of the image, so reflashing never touches it. Without the partition
-SSH still works, but the fingerprint changes on every reboot and clients will
-complain. The keys are `ed25519` and `ecdsa`; RSA is skipped because generating
-it on this SoC is slow and no current client needs it.
+No private key ships in the image. A baked-in host key would be shared by every
+board flashed from the same image, and would leak the moment the image did. The
+board generates its own on first boot and keeps them on `/mnt/cfg`, so the
+fingerprint is stable per board and survives reflashing. Without the `cfg`
+partition SSH still works, but the fingerprint changes every reboot and clients
+will complain. The keys are `ed25519` and `ecdsa`; RSA is skipped because
+generating it on this SoC is slow and no current client needs it.
 
 `BAKE_HOST_KEYS=1` embeds the build-time keys instead, for a private build on a
-board with no keys partition.
+board with no `cfg` partition.
 
 ## Air unit
 

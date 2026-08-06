@@ -832,6 +832,71 @@ exit 0
 INNER
 chmod +x /usr/share/udhcpc/apfpv-action.sh
 
+# wfb-ng ground station. Reads /etc/wfb.conf (a symlink onto the persistent
+# config partition), puts the adapter in monitor mode on the configured channel,
+# and runs wfb_rx. wfb_rx emits plain UDP, which is exactly what mi-player
+# already consumes -- the same path proven with the PC sender.
+cat > /usr/bin/wfb-start << 'INNER'
+#!/bin/sh
+CONF=${1:-/etc/wfb.conf}
+IFACE=${IFACE:-wlan0}
+get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" $CONF 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
+
+CHANNEL=$(get channel);     [ -n "$CHANNEL" ]    || CHANNEL=161
+LINK_ID=$(get link_id);     [ -n "$LINK_ID" ]    || LINK_ID=7669206
+RADIO_PORT=$(get radio_port); [ -n "$RADIO_PORT" ] || RADIO_PORT=0
+UDP_PORT=$(get udp_port);   [ -n "$UDP_PORT" ]   || UDP_PORT=5600
+KEY=$(get key);             [ -n "$KEY" ]        || KEY=/mnt/cfg/wfb/gs.key
+
+[ -d /sys/class/net/$IFACE ] || load-wifi || exit 1
+
+# apfpv and wfb cannot share the adapter: one wants managed mode, the other
+# monitor. Stop anything holding it.
+killall wpa_supplicant 2>/dev/null
+[ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
+sleep 1
+
+if [ ! -f "$KEY" ]; then
+    mkdir -p "$(dirname "$KEY")"
+    echo "wfb: no key at $KEY, generating a pair"
+    ( cd "$(dirname "$KEY")" && wfb_keygen ) || exit 1
+    # wfb_keygen writes gs.key and drone.key in the current directory.
+    echo "wfb: copy $(dirname "$KEY")/drone.key to the air unit as /etc/drone.key"
+fi
+
+# Monitor mode via wireless extensions -- the driver implements IW_MODE_MONITOR
+# itself, so no iw or libnl is needed. Order matters: down, mode, up, channel.
+# Third argument is the sniff duration; 0 means set the mode and return.
+wifi-monitor $IFACE $CHANNEL 0 || {
+    echo "wfb: could not put $IFACE into monitor mode on channel $CHANNEL"
+    exit 1
+}
+echo "wfb: $IFACE monitor, channel $CHANNEL, link_id $LINK_ID, port $RADIO_PORT"
+
+echo "$UDP_PORT" > /tmp/wfb.port
+# wfb_rx checks /dev/random and libsodium wants entropy, so this can pause on a
+# cold boot exactly as dropbearkey does.
+wfb_rx -K "$KEY" -c 127.0.0.1 -u "$UDP_PORT" -p "$RADIO_PORT" -i "$LINK_ID" $IFACE &
+echo $! > /tmp/wfb.pid
+sleep 2
+
+# The player is already listening if vdec_test armed it; otherwise start one.
+if [ ! -f /tmp/fpv.pid ] || ! kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null; then
+    fpv-start udp
+fi
+wait
+INNER
+chmod +x /usr/bin/wfb-start
+
+cat > /usr/bin/wfb-stop << 'INNER'
+#!/bin/sh
+[ -f /tmp/wfb.pid ] && kill "$(cat /tmp/wfb.pid)" 2>/dev/null
+killall wfb_rx 2>/dev/null
+rm -f /tmp/wfb.pid
+fpv-stop
+INNER
+chmod +x /usr/bin/wfb-stop
+
 # Adapted from OpenIPC sbc-groundstations package/wifibroadcast-ng/files/wfb-nics.
 # Theirs greps udevadm output, which we do not have, so the same detection is
 # done by walking sysfs for the driver name. The interface is identical, so their
@@ -928,13 +993,21 @@ cat > /usr/bin/fpv-start << 'INNER'
 # the DHCP bound/renew handler, so it runs on a real event instead of after a
 # guessed delay -- association plus lease can take anywhere from 5 to 60s
 # depending on when the air unit is powered on.
-# usage: fpv-start [gateway]
-[ -f /tmp/fpv.conf ] || exit 0
-. /tmp/fpv.conf
-[ -n "$FPV_URL" ] || exit 0
+# usage: fpv-start [gateway | udp]
+# "udp" is the wfb-ng path: wfb_rx has already put a decoded stream on a local
+# UDP port, so there is no RTSP session to negotiate and no config file to wait
+# for. Everything downstream -- OSD clearing, retry loop -- is shared.
+if [ "$1" = "udp" ]; then
+    [ -f /tmp/fpv.conf ] && . /tmp/fpv.conf
+    URL="udp:$(cat /tmp/wfb.port 2>/dev/null || echo 5600)"
+else
+    [ -f /tmp/fpv.conf ] || exit 0
+    . /tmp/fpv.conf
+    [ -n "$FPV_URL" ] || exit 0
 
-GW=${1:-$(cat /tmp/apfpv-gw 2>/dev/null)}
-URL=$FPV_URL
+    GW=${1:-$(cat /tmp/apfpv-gw 2>/dev/null)}
+    URL=$FPV_URL
+fi
 if [ "$URL" = "auto" ]; then
     # On an AP-mode air unit the gateway IS the camera, so there is nothing to
     # hardcode: whatever handed us the lease is what we stream from.
@@ -973,7 +1046,10 @@ killall mi-disp-init fb-splash 2>/dev/null
 echo "fpv: link up, streaming $URL" > /dev/console
 (
     while :; do
-        ${FPV_PLAYER:-mi-player} -r "$URL" -s "${FPV_SRC:-1280x720}" $FPV_OPTS
+        case "$URL" in
+            udp:*) ${FPV_PLAYER:-mi-player} -u "${URL#udp:}" -s "${FPV_SRC:-1280x720}" $FPV_OPTS ;;
+            *)     ${FPV_PLAYER:-mi-player} -r "$URL" -s "${FPV_SRC:-1280x720}" $FPV_OPTS ;;
+        esac
         # The air unit may still be booting, or may have rebooted mid-flight.
         echo "fpv: player exited, retrying in 3s" > /dev/console
         sleep 3
@@ -1237,54 +1313,95 @@ start_eth() {
     fi
 }
 start_eth
+# Persistent settings. The rootfs is a RAM initramfs, so this is the only thing
+# that survives a reboot -- or a reflash, since it sits above the image. A real
+# writable filesystem rather than a hand-rolled blob, so it can be edited over
+# SSH with vi and copied to with scp, the way OpenIPC's overlay works.
+# Needs mtdparts=NOR_FLASH:512k@0xf80000(cfg) on the kernel command line.
+CFG_DIR=/mnt/cfg
+mount_cfg() {
+    mkdir -p $CFG_DIR
+    m=$(awk -F'[:"]' '/"cfg"/{print $1}' /proc/mtd 2>/dev/null | head -1)
+    [ -n "$m" ] || return 1
+    n=${m#mtd}
+    mount -t jffs2 /dev/mtdblock$n $CFG_DIR 2>/dev/null && return 0
+    # Unformatted on first boot: an erased NOR partition is not a filesystem.
+    echo "cfg: formatting /dev/$m (first boot, takes a moment)"
+    flash_eraseall -j /dev/$m >/dev/null 2>&1
+    mount -t jffs2 /dev/mtdblock$n $CFG_DIR 2>/dev/null
+}
+if mount_cfg; then
+    echo "cfg: $CFG_DIR mounted -- settings here survive reboot and reflash"
+    # Seed the config on first boot, then expose it at the conventional path.
+    if [ ! -f $CFG_DIR/wfb.conf ]; then
+        cat > $CFG_DIR/wfb.conf << 'WFBCONF'
+# Ground station link settings.
+#
+# Edit over SSH and reboot for the change to take effect:
+#   ssh root@<board>  ;  vi /mnt/cfg/wfb.conf  ;  reboot
+#
+# mode      apfpv  join the air unit's WiFi AP and pull RTSP from it. Works with
+#                  a stock OpenIPC/majestic camera, no pairing, short range.
+#           wfb    wfb-ng: monitor mode with FEC. Needs a matching air unit and
+#                  a shared key. This is the real long-range link.
+mode = apfpv
+
+# --- wfb mode only. Every one of these must match the air unit. ---
+channel = 161
+link_id = 7669206
+radio_port = 0
+udp_port = 5600
+
+# Key pair. wfb-start generates one on first use if it is missing and writes
+# both halves next to this file; copy drone.key to the air unit as /etc/drone.key
+# (or scp your existing gs.key over the top of this one).
+key = /mnt/cfg/wfb/gs.key
+
+# --- apfpv mode only ---
+ssid = OpenIPC
+psk = 12345678
+
+# Regulatory domain, as a two-letter country code. The default 00 is the world
+# domain, which forbids transmitting on most 5GHz channels -- a 5GHz air unit
+# will not associate reliably until this is set to your own country.
+region = 00
+WFBCONF
+        echo "cfg: wrote a default $CFG_DIR/wfb.conf"
+    fi
+    ln -sf $CFG_DIR/wfb.conf /etc/wfb.conf
+else
+    echo "cfg: no 'cfg' partition, settings will NOT persist. Add to bootargs:"
+    echo "     mtdparts=NOR_FLASH:512k@0xf80000(cfg)"
+fi
+
+# Reads one key from the persistent config. Trims a trailing comment and outer
+# whitespace but keeps inner spaces, so a passphrase containing one survives.
+conf_get() {
+    [ -f /etc/wfb.conf ] || return 0
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null |
+        head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'
+}
+
 telnetd -l /bin/sh
 
 # SSH. Dropbear needs /dev/pts (mounted above) and a writable /var/run for its
 # pid file.
 #
-# Host keys: this is a RAM initramfs, so anything generated at boot is lost and
-# the board's fingerprint would change on every reboot. Baking keys into the
-# image instead gives every board flashed from it the same identity. So keep
-# them in one erase block of flash: generated once on first boot, restored on
-# every boot after. Nothing secret ships in the image and each board is distinct.
-# Needs a partition named "keys" -- add to bootargs:
-#   mtdparts=NOR_FLASH:64k@0xff0000(keys)
-# That block sits in the stock 'mtd' partition at the top of the chip, well
-# clear of the image, so nothing we flash can tread on it.
-KEYSTORE_MAGIC=NVRKEYS1
-
-keys_mtd() { awk -F'[:"]' '/"keys"/{print $1}' /proc/mtd 2>/dev/null | head -1; }
-
-restore_host_keys() {
-    m=$(keys_mtd)
-    [ -n "$m" ] || return 1
-    dd if=/dev/$m bs=64k count=1 2>/dev/null > /tmp/keys.blob || return 1
-    # Everything past the terminator is erased flash (0xff); the range match
-    # stops there, so it never reaches base64.
-    sed -n "/^$KEYSTORE_MAGIC\$/,/^ENDKEYS\$/p" /tmp/keys.blob 2>/dev/null |
-        sed '1d;$d' | base64 -d > /tmp/keys.tar 2>/dev/null
-    [ -s /tmp/keys.tar ] || return 1
-    tar -xf /tmp/keys.tar -C /etc 2>/dev/null || return 1
-    rm -f /tmp/keys.blob /tmp/keys.tar
-    [ -f /etc/dropbear/dropbear_ed25519_host_key ]
-}
-
-save_host_keys() {
-    m=$(keys_mtd)
-    [ -n "$m" ] || return 1
-    tar -cf /tmp/keys.tar -C /etc dropbear 2>/dev/null || return 1
-    { echo "$KEYSTORE_MAGIC"; base64 /tmp/keys.tar; echo ENDKEYS; } > /tmp/keys.blob
-    flashcp /tmp/keys.blob /dev/$m >/dev/null 2>&1 || return 1
-    rm -f /tmp/keys.blob /tmp/keys.tar
-}
-
+# Host keys live on /mnt/cfg, mounted above. A RAM initramfs loses anything
+# generated at boot, so the fingerprint would otherwise change every reboot;
+# baking keys into the image instead would give every board flashed from it the
+# same identity. /etc/dropbear is a symlink onto the persistent filesystem, so
+# dropbear neither knows nor cares.
 setup_host_keys() {
-    mkdir -p /etc/dropbear
-    [ -f /etc/dropbear/dropbear_ed25519_host_key ] && return 0   # baked in
-    if restore_host_keys; then
-        echo "ssh: host keys restored from flash" > /dev/console
-        return 0
+    if mountpoint -q $CFG_DIR 2>/dev/null; then
+        mkdir -p $CFG_DIR/dropbear
+        chmod 700 $CFG_DIR/dropbear
+        rm -rf /etc/dropbear
+        ln -sf $CFG_DIR/dropbear /etc/dropbear
+    else
+        mkdir -p /etc/dropbear
     fi
+    [ -f /etc/dropbear/dropbear_ed25519_host_key ] && return 0
     # dropbear is built with HAVE_GETRANDOM and blocks in getrandom() until the
     # kernel CRNG is seeded. On this board that can take minutes: no RTC, no
     # disk, and few interrupts until the network and USB are busy. Hence the
@@ -1296,18 +1413,12 @@ setup_host_keys() {
         dropbearkey -t $t -f /etc/dropbear/dropbear_${t}_host_key > /dev/console 2>&1
     done
     chmod 600 /etc/dropbear/* 2>/dev/null
-    if save_host_keys; then
-        echo "ssh: generated host keys and saved them to flash" > /dev/console
-    elif [ -z "$(keys_mtd)" ]; then
-        echo "ssh: generated TEMPORARY host keys -- no 'keys' partition, so the" > /dev/console
-        echo "     fingerprint will change on every reboot. Add to bootargs:" > /dev/console
-        echo "     mtdparts=NOR_FLASH:64k@0xff0000(keys)" > /dev/console
+    if mountpoint -q $CFG_DIR 2>/dev/null; then
+        echo "ssh: generated host keys, kept on $CFG_DIR" > /dev/console
     else
-        # Distinguish this from a missing partition: the likely cause is the
-        # chip re-arming its block protection, which makes the write a no-op.
-        echo "ssh: WRITE TO $(keys_mtd) FAILED -- host keys are temporary." > /dev/console
-        echo "     If U-Boot prints 'lk=>6' at boot the flash is locked; run" > /dev/console
-        echo "     'sf probe 0; sf lock 0' there and reboot." > /dev/console
+        echo "ssh: generated TEMPORARY host keys -- no cfg partition, so the" > /dev/console
+        echo "     fingerprint changes every reboot. Add to bootargs:" > /dev/console
+        echo "     mtdparts=NOR_FLASH:512k@0xf80000(cfg)" > /dev/console
     fi
 }
 
@@ -1467,19 +1578,23 @@ echo "To try another set, reboot with mi_set=sdk|xm|hybrid on the kernel cmdline
 echo "Do NOT rmmod these modules -- it oopses the kernel."
 echo ""
 
-# ── APFPV autostart ───────────────────────────────────────────────────────────
+# ── Link configuration ────────────────────────────────────────────────────────
 # Started last and in the background: telnetd is already up by this point, so a
-# wifi problem can never cost us the only usable console. Configure with
-#   apfpv=off                 disable entirely
-#   apfpv_ssid=NAME           air unit SSID   (default OpenIPC)
-#   apfpv_psk=PASSWORD        air unit key    (default 12345678)
+# wifi problem can never cost us the only usable console.
+#
+# Three sources, lowest to highest precedence: built-in default, the persistent
+# config file, then the kernel command line. The file is what you edit over SSH;
+# the command line stays as the override that does not need a working filesystem.
+#   apfpv=off                 disable the link entirely
+#   apfpv_ssid= apfpv_psk=    air unit SSID and key
+#   wifi_cc=                  regulatory domain
 APFPV_ON=1
-APFPV_SSID=OpenIPC
-APFPV_PSK=12345678
+APFPV_SSID=$(conf_get ssid)
+APFPV_PSK=$(conf_get psk)
 # Regulatory domain for the wifi driver, as an alpha2. The default 00 (world)
 # forbids active scanning and TX on most 5GHz channels, so a 5GHz air unit will
 # not associate reliably. Set this to your own country.
-WIFI_CC=00
+WIFI_CC=$(conf_get region)
 for arg in $(cat /proc/cmdline); do
     case $arg in
         apfpv=off)   APFPV_ON=0 ;;
@@ -1488,14 +1603,42 @@ for arg in $(cat /proc/cmdline); do
         wifi_cc=*)    WIFI_CC=${arg#wifi_cc=} ;;
     esac
 done
+[ -n "$APFPV_SSID" ] || APFPV_SSID=OpenIPC
+[ -n "$APFPV_PSK" ]  || APFPV_PSK=12345678
+[ -n "$WIFI_CC" ]    || WIFI_CC=00
 echo "$WIFI_CC" > /etc/wifi-cc
 
-if [ $APFPV_ON -eq 1 ]; then
-    echo "apfpv: autostarting for SSID '$APFPV_SSID' (log: /tmp/apfpv.log)"
-    (apfpv "$APFPV_SSID" "$APFPV_PSK" > /tmp/apfpv.log 2>&1) &
-else
-    echo "apfpv: disabled (apfpv=off)"
+# ── Link mode: apfpv or wfb-ng ────────────────────────────────────────────────
+# The two are mutually exclusive -- apfpv needs the adapter in managed mode
+# associated to the air unit's AP, wfb-ng needs monitor mode with no association
+# at all -- so exactly one runs. The persistent config is the primary source so
+# it can be changed over SSH; link= on the command line overrides it, which is
+# the way back if a config edit leaves the board unable to see the drone.
+LINK_MODE=""
+for arg in $(cat /proc/cmdline); do
+    case $arg in
+        link=*) LINK_MODE=${arg#link=} ;;
+    esac
+done
+if [ -z "$LINK_MODE" ] && [ -f /etc/wfb.conf ]; then
+    LINK_MODE=$(sed -n 's/^[[:space:]]*mode[[:space:]]*=[[:space:]]*\([a-z]*\).*/\1/p' /etc/wfb.conf | head -1)
 fi
+[ -n "$LINK_MODE" ] || LINK_MODE=apfpv
+[ $APFPV_ON -eq 1 ] || LINK_MODE=off
+
+case $LINK_MODE in
+    wfb)
+        echo "link: wfb-ng (log: /tmp/wfb.log) -- edit /mnt/cfg/wfb.conf to change"
+        (wfb-start > /tmp/wfb.log 2>&1) &
+        ;;
+    apfpv)
+        echo "apfpv: autostarting for SSID '$APFPV_SSID' (log: /tmp/apfpv.log)"
+        (apfpv "$APFPV_SSID" "$APFPV_PSK" > /tmp/apfpv.log 2>&1) &
+        ;;
+    *)
+        echo "link: disabled ($LINK_MODE)"
+        ;;
+esac
 echo ""
 
 # ── VDEC diagnostic mode ──────────────────────────────────────────────────────
@@ -1867,7 +2010,7 @@ printf '  sf read 0x21000000 0x%x 0x%x\n' "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  bootm 0x21000000"
 echo ""
 printf 'Then make it permanent:\n'
-printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:64k@0xff0000(keys) ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
+printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:512k@0xf80000(cfg) ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
 printf "  setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x%x 0x%x;bootm 0x21000000'\n" \
     "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  setenv bootdelay 3"
