@@ -50,6 +50,7 @@ export ARCH CROSS_COMPILE
 echo "=== [1/3] Patching SigmaStar python2 build scripts ==="
 DTB_PY=$KERNEL_DIR/scripts/ms_builtin_dtb_update.py
 INT_PY=$KERNEL_DIR/scripts/ms_bin_option_update_int.py
+MVXV_PY=$KERNEL_DIR/scripts/ms_gen_mvxv_h.py
 
 # mmap.find() needs bytes, and the DTB must be read in binary mode.
 sed -i -e "s/^    name='#MS_DTB#'/    name=b'#MS_DTB#'/" \
@@ -61,6 +62,13 @@ sed -i -e "s/^    name='#MS_DTB#'/    name=b'#MS_DTB#'/" \
 sed -i -e "s/^    name=sys.argv\[2\]$/    name=sys.argv[2].encode()/" \
        -e "s/=long(/=int(/g" \
        $INT_PY
+
+# print statements. This one runs from the kernel.release target, so it breaks
+# the build before a single object is compiled. Idempotent: a converted line
+# starts "print(" and no longer matches.
+sed -i -E -e "s/^([[:space:]]*)print[[:space:]]+('.*')$/\1print(\2)/" \
+          -e "s/^([[:space:]]*)print[[:space:]]+(\".*\")$/\1print(\2)/" \
+          $MVXV_PY
 
 # ── mstar_gpio_* aliases for the stock XM mhal.ko ─────────────────────────────
 # The prebuilt XM mhal.ko (the only one with HDMI TX support) links against five
