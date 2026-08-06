@@ -112,9 +112,15 @@ STOCK_DUMP=${1:-${VENDOR_DUMP:-$SCRIPT_DIR/NBD80S10S-KL_original.bin}}
 if [ -d "$SCRIPT_DIR/vendor/modules" ] && [ ! -f "$STOCK_DUMP" ] \
    && [ ! -d "$BUILD_DIR/vendor/x_modules/modules" ]; then
     echo "=== vendor blobs: using the copies committed in vendor/ ==="
-    (cd "$SCRIPT_DIR/vendor" && md5sum -c MD5SUMS >/dev/null 2>&1) \
-        && echo "  checksums OK ($(ls "$SCRIPT_DIR"/vendor/modules/*.ko | wc -l) modules)" \
-        || echo "warning: vendor/MD5SUMS does not match" >&2
+    # Fatal, not a warning: MD5SUMS now lists every vendored file, so a mismatch
+    # means one is missing or altered. A .gitignore rule had already dropped the
+    # video decoder firmware from the repo without anything noticing.
+    if ! (cd "$SCRIPT_DIR/vendor" && md5sum -c MD5SUMS >/dev/null 2>&1); then
+        echo "error: vendor/ does not match MD5SUMS -- these differ:" >&2
+        (cd "$SCRIPT_DIR/vendor" && md5sum -c MD5SUMS 2>&1 | grep -v ': OK$') >&2
+        exit 1
+    fi
+    echo "  checksums OK ($(wc -l < "$SCRIPT_DIR/vendor/MD5SUMS") files)"
     echo ""
     echo "ready: run ./build-sdk.sh"
     exit 0

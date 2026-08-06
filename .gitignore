@@ -28,6 +28,12 @@ uImage-chenxing
 *.img
 current_state.bin
 
+# ...but the vendored /config tables are .bin too, and the image needs them:
+# config/vdec_fw/chagall.bin is the video decoder firmware. Without this the
+# rule above quietly leaves them out of a clone and CI builds an image that
+# cannot decode video.
+!vendor/**/*.bin
+
 # ── Local scratch ────────────────────────────────────────────────────────────
 .venv/
 screenlog*
