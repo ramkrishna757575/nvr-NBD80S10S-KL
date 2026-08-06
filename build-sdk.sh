@@ -1382,6 +1382,24 @@ conf_get() {
         head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'
 }
 
+# PID 1 here is this shell script, not an init that handles SIGTERM, so
+# busybox's reboot -- which signals PID 1 and waits for it -- does nothing at
+# all. Shadow it from /bin, which comes first in PATH. Flushing matters now that
+# /mnt/cfg is a real filesystem: reboot(2) unmounts nothing, so a config edit
+# made seconds earlier would be lost.
+for a in reboot poweroff halt; do
+    cat > /bin/$a << INNER
+#!/bin/sh
+echo "$a: flushing and going down"
+killall mi-player wfb_rx wpa_supplicant udhcpc 2>/dev/null
+sync
+umount $CFG_DIR 2>/dev/null
+sync
+exec busybox $a -f "\$@"
+INNER
+    chmod +x /bin/$a
+done
+
 telnetd -l /bin/sh
 
 # SSH. Dropbear needs /dev/pts (mounted above) and a writable /var/run for its
