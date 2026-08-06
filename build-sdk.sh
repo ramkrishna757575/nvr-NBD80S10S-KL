@@ -1454,6 +1454,11 @@ start_dropbear && echo "ssh: starting in the background"
 # so re-assert eth0 and restart telnetd if either disappears.
 (
     while :; do
+        # Sleep first. Checking at t=0 races the startup that is still in
+        # progress a few lines above -- dropbear in particular is mid-fork as it
+        # daemonises, so the check saw no process and "restarted" a healthy one.
+        sleep 5
+
         if ! ifconfig eth0 2>/dev/null | grep -q "inet addr:"; then
             # A DHCP client still negotiating is not a failure. Restarting here
             # spawns a second udhcpc: both then run the lease script, and they
@@ -1489,8 +1494,6 @@ start_dropbear && echo "ssh: starting in the background"
                 tail -c 65536 "$f" > "$f.tmp" && mv "$f.tmp" "$f"
             fi
         done
-
-        sleep 5
     done
 ) &
 
