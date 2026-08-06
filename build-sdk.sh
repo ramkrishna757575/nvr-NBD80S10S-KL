@@ -1208,6 +1208,11 @@ chmod +x /usr/share/udhcpc/eth0.script
 # Backgrounded so a missing DHCP server cannot hold up video for the retry
 # window. udhcpc daemonises itself once it has a lease; -b makes it do the same
 # after giving up, so it keeps retrying behind the fallback address.
+eth_dhcp_running() {
+    [ -f /var/run/udhcpc.eth0.pid ] || return 1
+    kill -0 "$(cat /var/run/udhcpc.eth0.pid)" 2>/dev/null
+}
+
 start_eth() {
     if [ -n "$ETH_IP" ]; then
         ifconfig eth0 $ETH_IP netmask 255.255.255.0 up
@@ -1264,39 +1269,60 @@ setup_host_keys() {
     mkdir -p /etc/dropbear
     [ -f /etc/dropbear/dropbear_ed25519_host_key ] && return 0   # baked in
     if restore_host_keys; then
-        echo "ssh: host keys restored from flash"
+        echo "ssh: host keys restored from flash" > /dev/console
         return 0
     fi
-    # RSA is the slow one to generate on this SoC and no current client needs
-    # it, so only these two. Entropy this early in boot is thin -- the kernel
-    # logs uninitialized urandom reads -- but this runs once per board.
+    # dropbear is built with HAVE_GETRANDOM and blocks in getrandom() until the
+    # kernel CRNG is seeded. On this board that can take minutes: no RTC, no
+    # disk, and few interrupts until the network and USB are busy. Hence the
+    # background call below -- this must never sit on the boot path. Its own
+    # "Waiting for kernel randomness" warning goes to the console rather than
+    # /dev/null, so a slow first boot explains itself.
+    echo "ssh: generating host keys (waits for kernel entropy, can take minutes)" > /dev/console
     for t in ed25519 ecdsa; do
-        dropbearkey -t $t -f /etc/dropbear/dropbear_${t}_host_key >/dev/null 2>&1
+        dropbearkey -t $t -f /etc/dropbear/dropbear_${t}_host_key > /dev/console 2>&1
     done
     chmod 600 /etc/dropbear/* 2>/dev/null
     if save_host_keys; then
-        echo "ssh: generated host keys and saved them to flash"
+        echo "ssh: generated host keys and saved them to flash" > /dev/console
+    elif [ -z "$(keys_mtd)" ]; then
+        echo "ssh: generated TEMPORARY host keys -- no 'keys' partition, so the" > /dev/console
+        echo "     fingerprint will change on every reboot. Add to bootargs:" > /dev/console
+        echo "     mtdparts=NOR_FLASH:64k@0xff0000(keys)" > /dev/console
     else
-        echo "ssh: generated TEMPORARY host keys -- no 'keys' partition, so the"
-        echo "     fingerprint will change on every reboot. Add to bootargs:"
-        echo "     mtdparts=NOR_FLASH:64k@0xff0000(keys)"
+        # Distinguish this from a missing partition: the likely cause is the
+        # chip re-arming its block protection, which makes the write a no-op.
+        echo "ssh: WRITE TO $(keys_mtd) FAILED -- host keys are temporary." > /dev/console
+        echo "     If U-Boot prints 'lk=>6' at boot the flash is locked; run" > /dev/console
+        echo "     'sf probe 0; sf lock 0' there and reboot." > /dev/console
     fi
 }
 
+# Backgrounded as a whole: first-boot key generation blocks on kernel entropy,
+# and video must not wait for it. The flag file stops the 5s supervisor from
+# starting a second attempt while the first is still waiting.
 start_dropbear() {
     [ -x /sbin/dropbear ] || return 1
+    [ -e /tmp/dropbear.starting ] && return 0
+    : > /tmp/dropbear.starting
     mkdir -p /var/run
-    setup_host_keys
-    # Refuse password logins unless the image was built with a root password
-    # hash, otherwise the account is locked ('*') and dropbear would just be
-    # answering connections it can never authenticate.
-    if [ "$(cat /etc/ssh-password-login 2>/dev/null)" = "1" ]; then
-        dropbear -p 22 >/dev/null 2>&1
-    else
-        dropbear -p 22 -s >/dev/null 2>&1
-    fi
+    (
+        setup_host_keys
+        # Refuse password logins unless the image was built with a root password
+        # hash, otherwise the account is locked ('*') and dropbear would just be
+        # answering connections it can never authenticate.
+        if [ "$(cat /etc/ssh-password-login 2>/dev/null)" = "1" ]; then
+            dropbear -p 22 >/dev/null 2>&1
+        else
+            dropbear -p 22 -s >/dev/null 2>&1
+        fi
+        pidof dropbear >/dev/null 2>&1 &&
+            echo "ssh: dropbear listening on 22" > /dev/console
+        rm -f /tmp/dropbear.starting
+    ) &
+    return 0
 }
-start_dropbear && echo "ssh: dropbear listening on 22"
+start_dropbear && echo "ssh: starting in the background"
 
 # Supervisor: telnet is the ONLY interactive console on this board (UART RX is
 # dead), so losing it means a power cycle. Joining the drone's AP can disturb
@@ -1305,8 +1331,13 @@ start_dropbear && echo "ssh: dropbear listening on 22"
 (
     while :; do
         if ! ifconfig eth0 2>/dev/null | grep -q "inet addr:"; then
-            echo "net: eth0 has no address, restarting" > /dev/console
-            start_eth
+            # A DHCP client still negotiating is not a failure. Restarting here
+            # spawns a second udhcpc: both then run the lease script, and they
+            # share a pid file, so later kill-by-pidfile hits the wrong process.
+            if ! eth_dhcp_running; then
+                echo "net: eth0 has no address, restarting" > /dev/console
+                start_eth
+            fi
         fi
         # Keep eth0's subnet route ahead of any wlan0 route in the same range.
         # Derived from the live address, which DHCP may change.
@@ -1318,7 +1349,10 @@ start_dropbear && echo "ssh: dropbear listening on 22"
             telnetd -l /bin/sh
         fi
 
-        if [ -x /sbin/dropbear ] && ! pidof dropbear > /dev/null 2>&1; then
+        # The flag means startup is still in progress -- key generation can wait
+        # a long time on kernel entropy, and that is not a death.
+        if [ -x /sbin/dropbear ] && ! pidof dropbear > /dev/null 2>&1 &&
+           [ ! -e /tmp/dropbear.starting ]; then
             echo "net: dropbear died, restarting" > /dev/console
             start_dropbear
         fi
