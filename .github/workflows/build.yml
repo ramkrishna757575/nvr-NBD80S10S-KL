@@ -114,6 +114,8 @@ jobs:
     # requests: an image per PR would burn 40 minutes a push for something
     # nobody flashes.
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -171,3 +173,28 @@ jobs:
           name: uImage-sdk-${{ steps.pkg.outputs.short }}
           path: dist/
           retention-days: 30
+
+      # Publishes on every push to master and on manual runs (the job already
+      # excludes pull requests). No cron: every dependency is pinned to a
+      # commit or a version, so a nightly rebuild of unchanged inputs would
+      # produce the same image. This repo changing is the only thing that can
+      # change the output. Artifacts are zipped and need a token to fetch, so
+      # the board cannot pull one; a release asset is the raw file on a stable
+      # unauthenticated URL, which is what sysupgrade needs. The 'latest' tag is
+      # recreated each time so that URL never changes.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest dist/uImage-sdk dist/SHA256SUMS dist/BUILDINFO \
+            --title "latest (${{ steps.pkg.outputs.short }})" \
+            --notes "Build of ${GITHUB_SHA}.
+
+          Update an already-running board over SSH:
+
+              sysupgrade https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/uImage-sdk
+
+          Settings in /mnt/cfg are preserved. First-time flashing still needs
+          TFTP from U-Boot -- see the README."
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/uImage-sdk"

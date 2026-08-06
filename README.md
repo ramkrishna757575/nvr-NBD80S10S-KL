@@ -203,7 +203,7 @@ and untouched by reflashing, since the image only covers `0x50000`–`0xb80000`.
 It needs one kernel argument:
 
 ```
-mtdparts=NOR_FLASH:512k@0xf80000(cfg)
+mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)
 ```
 
 Everything is configured in `/mnt/cfg/wfb.conf` (symlinked to `/etc/wfb.conf`),

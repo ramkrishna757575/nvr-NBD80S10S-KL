@@ -1317,7 +1317,7 @@ start_eth
 # that survives a reboot -- or a reflash, since it sits above the image. A real
 # writable filesystem rather than a hand-rolled blob, so it can be edited over
 # SSH with vi and copied to with scp, the way OpenIPC's overlay works.
-# Needs mtdparts=NOR_FLASH:512k@0xf80000(cfg) on the kernel command line.
+# Needs mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg) on the kernel command line.
 CFG_DIR=/mnt/cfg
 mount_cfg() {
     mkdir -p $CFG_DIR
@@ -1371,7 +1371,7 @@ WFBCONF
     ln -sf $CFG_DIR/wfb.conf /etc/wfb.conf
 else
     echo "cfg: no 'cfg' partition, settings will NOT persist. Add to bootargs:"
-    echo "     mtdparts=NOR_FLASH:512k@0xf80000(cfg)"
+    echo "     mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)"
 fi
 
 # Reads one key from the persistent config. Trims a trailing comment and outer
@@ -1404,6 +1404,110 @@ INNER
         chmod +x $d/$a
     done
 done
+
+# In-place firmware update, in the spirit of OpenIPC's sysupgrade. Rewriting the
+# partition we booted from is safe here: U-Boot copies the whole image into RAM
+# before bootm and the rootfs is an initramfs, so nothing reads flash at
+# runtime. U-Boot and its environment live below 0x50000, outside the partition,
+# so a failed write cannot cost the bootloader -- TFTP recovery always remains.
+cat > /usr/sbin/sysupgrade << 'INNER'
+#!/bin/sh
+REBOOT=1
+WIPE_CFG=0
+SRC=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n) REBOOT=0 ;;
+        -c) WIPE_CFG=1 ;;
+        -h|--help)
+            echo "usage: sysupgrade [-n] [-c] <uImage|http://url>"
+            echo "  -n  write but do not reboot"
+            echo "  -c  also erase /mnt/cfg (factory reset)"
+            echo "Settings in /mnt/cfg are kept unless -c is given."
+            exit 0 ;;
+        -*) echo "sysupgrade: unknown option $1"; exit 1 ;;
+        *)  SRC=$1 ;;
+    esac
+    shift
+done
+[ -n "$SRC" ] || { echo "usage: sysupgrade [-n] [-c] <uImage|http://url>"; exit 1; }
+
+line=$(grep '"system"' /proc/mtd)
+[ -n "$line" ] || {
+    echo "sysupgrade: no 'system' partition. Add to bootargs:"
+    echo "  mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)"
+    exit 1
+}
+MTD=${line%%:*}
+PSIZE=$((0x$(echo "$line" | awk '{print $2}')))
+
+case "$SRC" in
+    http://*|https://*|ftp://*)
+        echo "sysupgrade: downloading $SRC"
+        wget -O /tmp/sysupgrade.bin "$SRC" || exit 1
+        SRC=/tmp/sysupgrade.bin ;;
+esac
+[ -f "$SRC" ] || { echo "sysupgrade: $SRC not found"; exit 1; }
+
+# Accept a CI zip as well as a bare uImage. Detected by magic, not by name, so
+# a renamed download still works. /tmp is RAM, so drop the archive immediately.
+if [ "$(od -A n -t x1 -N 4 "$SRC" | tr -d ' \n')" = "504b0304" ]; then
+    echo "sysupgrade: zip archive, extracting"
+    rm -rf /tmp/sysupgrade.d && mkdir -p /tmp/sysupgrade.d
+    unzip -o -q "$SRC" -d /tmp/sysupgrade.d || { echo "sysupgrade: unzip failed"; exit 1; }
+    [ "$SRC" = /tmp/sysupgrade.bin ] && rm -f "$SRC"
+    found=
+    for f in /tmp/sysupgrade.d/* /tmp/sysupgrade.d/*/*; do
+        [ -f "$f" ] || continue
+        [ "$(od -A n -t x1 -N 4 "$f" | tr -d ' \n')" = "27051956" ] && { found=$f; break; }
+    done
+    [ -n "$found" ] || { echo "sysupgrade: no uImage inside the archive"; exit 1; }
+    echo "sysupgrade: using $(basename "$found")"
+    SRC=$found
+fi
+
+# Check before erasing, not after: a wrong file leaves an unbootable board and
+# only U-Boot to recover with.
+SIZE=$(wc -c < "$SRC")
+magic=$(od -A n -t x1 -N 4 "$SRC" | tr -d ' \n')
+load=$(od -A n -t x1 -j 16 -N 4 "$SRC" | tr -d ' \n')
+dsize=$(od -A n -t x1 -j 12 -N 4 "$SRC" | tr -d ' \n')
+[ "$magic" = "27051956" ] || { echo "sysupgrade: not a uImage (magic $magic)"; exit 1; }
+[ "$load" = "20008000" ] || { echo "sysupgrade: load address $load, not an image for this board"; exit 1; }
+# Magic and load address survive truncation, so a half-finished download would
+# otherwise pass. The header's own payload length does not.
+EXPECT=$((0x$dsize + 64))
+[ "$SIZE" -eq "$EXPECT" ] || {
+    echo "sysupgrade: size mismatch -- file is $SIZE bytes, header says $EXPECT"
+    echo "            (truncated or corrupt download)"
+    exit 1
+}
+[ "$SIZE" -le "$PSIZE" ] || { echo "sysupgrade: image $SIZE > partition $PSIZE"; exit 1; }
+
+echo "sysupgrade: $SIZE bytes -> /dev/$MTD ($PSIZE available)"
+echo "sysupgrade: DO NOT POWER OFF. This takes about a minute."
+# flashcp erases, writes and verifies; without -v there is no sign of progress.
+if ! flashcp -v "$SRC" /dev/$MTD; then
+    echo "sysupgrade: WRITE FAILED -- do not reboot, reflash over TFTP from U-Boot"
+    exit 1
+fi
+
+if [ $WIPE_CFG -eq 1 ]; then
+    c=$(grep '"cfg"' /proc/mtd)
+    if [ -n "$c" ]; then
+        umount /mnt/cfg 2>/dev/null
+        flash_eraseall -j /dev/${c%%:*} >/dev/null 2>&1 &&
+            echo "sysupgrade: /mnt/cfg erased, settings and host keys are gone"
+    fi
+fi
+
+if [ $REBOOT -eq 1 ]; then
+    echo "sysupgrade: done, rebooting"
+    exec reboot
+fi
+echo "sysupgrade: done, reboot when ready"
+INNER
+chmod +x /usr/sbin/sysupgrade
 
 telnetd -l /bin/sh
 
@@ -1441,7 +1545,7 @@ setup_host_keys() {
     else
         echo "ssh: generated TEMPORARY host keys -- no cfg partition, so the" > /dev/console
         echo "     fingerprint changes every reboot. Add to bootargs:" > /dev/console
-        echo "     mtdparts=NOR_FLASH:512k@0xf80000(cfg)" > /dev/console
+        echo "     mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)" > /dev/console
     fi
 }
 
@@ -2036,7 +2140,7 @@ printf '  sf read 0x21000000 0x%x 0x%x\n' "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  bootm 0x21000000"
 echo ""
 printf 'Then make it permanent:\n'
-printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:512k@0xf80000(cfg) ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
+printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg) ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
 printf "  setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x%x 0x%x;bootm 0x21000000'\n" \
     "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  setenv bootdelay 3"
