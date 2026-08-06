@@ -26,7 +26,11 @@ HOST_TRIPLET=arm-buildroot-linux-gnueabihf
 # format against an already-flashed drone.
 LIBSODIUM_VER=1.0.19
 LIBPCAP_VER=1.10.4
-WFB_REF=master
+# Pinned, not a branch: upstream master is a moving target and the toolchain
+# here is gcc 7.3 (fixed by the 4.9 kernel). A later master added a designated
+# initializer in rx.cpp that 7.3 cannot compile, which broke CI while this
+# machine's older checkout kept working. Bump deliberately, not by accident.
+WFB_REF=5d31caadec51cf15c9c16b0ed252c26d0d2f2fc1
 
 export PATH=$TOOLCHAIN_BIN:$BUILD_DIR/shim:$PATH
 export CC=${CROSS_COMPILE}gcc
@@ -103,10 +107,15 @@ fi
 echo "=== [3/3] wfb-ng ($WFB_REF) ==="
 cd $SRC
 if [ ! -d wfb-ng ]; then
-    git clone --depth 50 https://github.com/svpcom/wfb-ng.git wfb-ng
+    # Full clone: a shallow one cannot resolve a pinned SHA that has fallen
+    # outside the depth window.
+    git clone https://github.com/svpcom/wfb-ng.git wfb-ng
 fi
 cd wfb-ng
-git checkout -q $WFB_REF 2>/dev/null || true
+# No '|| true' -- silently building whatever HEAD happens to be is how an
+# unpinned dependency breaks the build somewhere else entirely.
+git fetch -q origin 2>/dev/null || true
+git checkout -q $WFB_REF || { echo "wfb-ng: cannot check out $WFB_REF" >&2; exit 1; }
 
 # gcc 7.3 (pinned by the kernel modules) rejects designated initializers that
 # skip fields -- "sorry, unimplemented: non-trivial designated initializers".

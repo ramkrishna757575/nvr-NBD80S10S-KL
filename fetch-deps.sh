@@ -17,6 +17,10 @@ mkdir -p "$BUILD_DIR"
 # Pinned so a build is reproducible.
 SDK_REPO=https://github.com/wireless-tag-com/openwrt-ssd20x.git
 RTL_REPO=https://github.com/svpcom/rtl8812au.git
+# Pinned so an upstream change cannot break this build without someone choosing
+# it. Both are cloned at a fixed commit rather than a branch tip.
+SDK_REF=0462db78958d11cb937e662f56a93cdf30b92a59
+RTL_REF=20bcaf511f159bfd8f435f7117b82056fc453572
 BUSYBOX_VER=1.36.1
 BUSYBOX_URL=https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2
 TOOLCHAIN_URL=https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-2018.11-1.tar.bz2
@@ -34,7 +38,8 @@ fi
 # ── SigmaStar SDK (kernel 4.9.84 + MI userspace) ─────────────────────────────
 if [ ! -d "$BUILD_DIR/sdk/sigmastar/kernel/4.9.84" ]; then
     echo "=== SigmaStar SDK (large, several minutes) ==="
-    git clone --depth 1 "$SDK_REPO" "$BUILD_DIR/sdk"
+    git clone --filter=blob:none --no-checkout "$SDK_REPO" "$BUILD_DIR/sdk"
+    git -C "$BUILD_DIR/sdk" checkout -q "$SDK_REF"
 else
     echo "=== SigmaStar SDK present ==="
 fi
@@ -69,7 +74,8 @@ fi
 # and simply skips wifi otherwise.
 if [ ! -d "$BUILD_DIR/rtl8812au" ]; then
     echo "=== RTL8812AU driver source ==="
-    git clone --depth 1 "$RTL_REPO" "$BUILD_DIR/rtl8812au"
+    git clone --filter=blob:none --no-checkout "$RTL_REPO" "$BUILD_DIR/rtl8812au"
+    git -C "$BUILD_DIR/rtl8812au" checkout -q "$RTL_REF"
 else
     echo "=== RTL8812AU present ==="
 fi
