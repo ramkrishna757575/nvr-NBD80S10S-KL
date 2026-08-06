@@ -26,9 +26,6 @@ BUSYBOX_BUILD=$BUILD_DIR/busybox-sdk
 # boots from NOR (not SPI NAND), so use the plain ssc010a_s01a defconfig.
 DEFCONFIG=infinity2m_ssc010a_s01a_defconfig
 
-# The kernel is loaded by the stock XM U-Boot at this address (see boot log).
-LOADADDR=0x20008000
-
 # gcc 7.3.0 from the bundled Buildroot toolchain. A modern gcc cannot build a 4.9 kernel.
 TOOLCHAIN_BIN=$BUILD_DIR/toolchain/armv7-eabihf--glibc--stable-2018.11-1/bin
 CROSS_COMPILE=arm-buildroot-linux-gnueabihf-
@@ -2081,10 +2078,13 @@ make olddefconfig
 # host gcc rejects because -fno-common became the default in gcc 10.
 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -fcommon"
 
-# The final "uImage" target shells out to mkimage (u-boot-tools), which may not be
-# installed -- but SigmaStar's own build step has already written a valid uImage by
-# then, so a failure here is not fatal. The image is validated below regardless.
-make -j$JOBS HOSTCFLAGS="$HOSTCFLAGS" uImage LOADADDR=$LOADADDR || true
+# Build Image, not uImage. Two rules in arch/arm/boot/Makefile write uImage:
+# SigmaStar's, which runs as part of the Image recipe and wraps the raw Image
+# with the bundled scripts/mkimage; and the stock one, which wraps zImage. The
+# stock rule needs host mkimage, so on a machine that has it (CI) it silently
+# replaced SigmaStar's uncompressed image with a compressed self-extracting one.
+# The board's stock flow uses the uncompressed form, so ask for that everywhere.
+make -j$JOBS HOSTCFLAGS="$HOSTCFLAGS" Image
 
 UIMAGE=$KERNEL_DIR/arch/arm/boot/uImage
 if [ ! -f $UIMAGE ]; then
@@ -2093,8 +2093,8 @@ if [ ! -f $UIMAGE ]; then
 fi
 
 # Reject a stale or truncated image rather than booting something broken.
-python3 - "$UIMAGE" << 'PYEOF'
-import struct, sys
+python3 - "$UIMAGE" "$KERNEL_DIR/arch/arm/boot/Image" << 'PYEOF'
+import os, struct, sys
 h = open(sys.argv[1], 'rb').read(64)
 if len(h) < 64:
     sys.exit("uImage is truncated")
@@ -2103,6 +2103,13 @@ if magic != 0x27051956:
     sys.exit("bad uImage magic: %08x" % magic)
 if load != 0x20008000 or entry != 0x20008000:
     sys.exit("unexpected load/entry: %08x/%08x" % (load, entry))
+# A zImage wrapper also passes the checks above, so compare against Image: it is
+# the only way to tell a stale uImage from the stock rule apart from ours.
+raw = os.path.getsize(sys.argv[2])
+if size != raw:
+    sys.exit("uImage payload is %d bytes but Image is %d -- wrong wrapper" % (size, raw))
+if os.path.getsize(sys.argv[1]) != size + 64:
+    sys.exit("uImage size does not match its own header")
 print("uImage OK: %d bytes, load %08x, name %s"
       % (size, load, h[32:64].split(b'\0')[0].decode('latin1')))
 PYEOF
