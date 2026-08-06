@@ -1441,23 +1441,44 @@ line=$(grep '"system"' /proc/mtd)
 MTD=${line%%:*}
 PSIZE=$((0x$(echo "$line" | awk '{print $2}')))
 
+# /tmp is deliberately capped at 8m and an image is bigger than that, so the
+# download needs its own tmpfs. Room for two copies: unzip needs the archive and
+# the extracted image at the same time.
+SCRATCH=/mnt/sysupgrade
+NEED_KB=$(( PSIZE / 1024 * 2 + 1024 ))
+scratch_clean() { umount $SCRATCH 2>/dev/null; rmdir $SCRATCH 2>/dev/null; }
+scratch_mount() {
+    [ -d $SCRATCH ] && return 0
+    avail=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+    [ "${avail:-0}" -gt $((NEED_KB + 8192)) ] || {
+        echo "sysupgrade: ${avail}K RAM free, need ~${NEED_KB}K plus headroom"
+        echo "            stop the video first: fpv-stop"
+        exit 1
+    }
+    mkdir -p $SCRATCH || exit 1
+    mount -t tmpfs -o size=${NEED_KB}k none $SCRATCH || { rmdir $SCRATCH; exit 1; }
+    trap scratch_clean EXIT
+}
+
 case "$SRC" in
     http://*|https://*|ftp://*)
+        scratch_mount
         echo "sysupgrade: downloading $SRC"
-        wget -O /tmp/sysupgrade.bin "$SRC" || exit 1
-        SRC=/tmp/sysupgrade.bin ;;
+        wget -O $SCRATCH/sysupgrade.bin "$SRC" || exit 1
+        SRC=$SCRATCH/sysupgrade.bin ;;
 esac
 [ -f "$SRC" ] || { echo "sysupgrade: $SRC not found"; exit 1; }
 
 # Accept a CI zip as well as a bare uImage. Detected by magic, not by name, so
-# a renamed download still works. /tmp is RAM, so drop the archive immediately.
+# a renamed download still works. Scratch is RAM, so drop the archive at once.
 if [ "$(od -A n -t x1 -N 4 "$SRC" | tr -d ' \n')" = "504b0304" ]; then
     echo "sysupgrade: zip archive, extracting"
-    rm -rf /tmp/sysupgrade.d && mkdir -p /tmp/sysupgrade.d
-    unzip -o -q "$SRC" -d /tmp/sysupgrade.d || { echo "sysupgrade: unzip failed"; exit 1; }
-    [ "$SRC" = /tmp/sysupgrade.bin ] && rm -f "$SRC"
+    scratch_mount
+    rm -rf $SCRATCH/d && mkdir -p $SCRATCH/d
+    unzip -o -q "$SRC" -d $SCRATCH/d || { echo "sysupgrade: unzip failed"; exit 1; }
+    [ "$SRC" = $SCRATCH/sysupgrade.bin ] && rm -f "$SRC"
     found=
-    for f in /tmp/sysupgrade.d/* /tmp/sysupgrade.d/*/*; do
+    for f in $SCRATCH/d/* $SCRATCH/d/*/*; do
         [ -f "$f" ] || continue
         [ "$(od -A n -t x1 -N 4 "$f" | tr -d ' \n')" = "27051956" ] && { found=$f; break; }
     done
