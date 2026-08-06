@@ -342,10 +342,10 @@ else
 fi
 
 # ── Dropbear SSH ──────────────────────────────────────────────────────────────
-# Built by ./build-dropbear.sh. telnetd stays as the recovery path (it needs no
-# keys and no working clock), but SSH is the sane way to manage the board: it is
-# authenticated, encrypted, and brings scp for pushing a rebuilt binary onto the
-# running system instead of reflashing.
+# Built by ./build-dropbear.sh. SSH is the way in: authenticated, encrypted, and
+# it brings scp for pushing a rebuilt binary onto the running system instead of
+# reflashing. telnetd is still built, but stays off unless asked for -- it is the
+# recovery path when SSH itself is the thing that broke.
 DROPBEAR_OUT=$BUILD_DIR/dropbear-out
 if [ -x $DROPBEAR_OUT/bin/dropbearmulti ]; then
     mkdir -p $INITRAMFS_DIR/etc/dropbear $INITRAMFS_DIR/root/.ssh \
@@ -517,6 +517,30 @@ echo "building fb-splash"
 ${CROSS_COMPILE}gcc -O2 -o $INITRAMFS_DIR/bin/fb-splash \
     $SCRIPT_DIR/src/fb-splash.c \
     || echo "warning: fb-splash failed to build" >&2
+
+# ── firmware signature verification ───────────────────────────────────────────
+# sysupgrade fetches over a connection busybox cannot authenticate: its wget
+# prints "TLS certificate validation not implemented" and means it. Signing makes
+# the transport irrelevant -- an image is installed only if it carries a
+# signature from the key below, however it arrived.
+#
+# Fatal rather than skippable: a verifier that is quietly absent is worse than
+# none, because sysupgrade would fall back to trusting the download.
+[ -f $SCRIPT_DIR/signing-key.pub ] || {
+    echo "error: signing-key.pub missing -- see README, 'Signing images'" >&2
+    exit 1
+}
+[ "$(stat -c%s $SCRIPT_DIR/signing-key.pub)" = "32" ] || {
+    echo "error: signing-key.pub must be a raw 32-byte ed25519 public key" >&2
+    exit 1
+}
+python3 -c "import sys; print(','.join('0x%02x' % b for b in open(sys.argv[1],'rb').read()))" \
+    $SCRIPT_DIR/signing-key.pub > $BUILD_DIR/signing-pubkey.h
+mkdir -p $INITRAMFS_DIR/usr/sbin
+echo "building verify-sig"
+${CROSS_COMPILE}gcc -O2 -o $INITRAMFS_DIR/usr/sbin/verify-sig \
+    -I$SCRIPT_DIR/src/tweetnacl -I$BUILD_DIR \
+    $SCRIPT_DIR/src/verify-sig.c $SCRIPT_DIR/src/tweetnacl/tweetnacl.c
 
 # ── video player ──────────────────────────────────────────────────────────────
 # UDP/file -> MI_VDEC -> MI_SYS bind -> MI_DISP -> HDMI. Unlike HDMI, VDEC does
@@ -1212,7 +1236,7 @@ chmod +x /bin/apfpv
 # by a NULL deref in DrvPnlSysfsInit. Pick the set at boot via mi_set= instead.
 
 # UART RX does not reach userspace on this board (TX works, typed input never
-# arrives), so bring up networking and offer a telnet shell as the usable console.
+# arrives), so bring up networking and offer an SSH shell as the usable console.
 #
 # The SDK emac driver has no MAC of its own. Take the board's real address from
 # the U-Boot environment, passed on the kernel command line as ethaddr=. The
@@ -1278,7 +1302,7 @@ case "$1" in
             : > /etc/resolv.conf
             for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
         fi
-        echo "net: $interface $ip  ->  telnet $ip / ssh root@$ip" > /dev/console
+        echo "net: $interface $ip  ->  ssh root@$ip" > /dev/console
         ;;
 esac
 exit 0
@@ -1356,6 +1380,13 @@ psk = 12345678
 # domain, which forbids transmitting on most 5GHz channels -- a 5GHz air unit
 # will not associate reliably until this is set to your own country.
 region = 00
+
+# --- access ---
+# telnet is an unencrypted console and, unlike SSH, sends the password in the
+# clear. Off by default; turn it on only to recover a board whose SSH has broken,
+# and only on a network you trust. telnet=1 on the kernel command line does the
+# same without needing this file to be readable.
+telnet = 0
 WFBCONF
         echo "cfg: wrote a default $CFG_DIR/wfb.conf"
     fi
@@ -1405,15 +1436,19 @@ cat > /usr/sbin/sysupgrade << 'INNER'
 #!/bin/sh
 REBOOT=1
 WIPE_CFG=0
+INSECURE=0
 SRC=
+SIG=
 while [ $# -gt 0 ]; do
     case $1 in
         -n) REBOOT=0 ;;
         -c) WIPE_CFG=1 ;;
+        -k) INSECURE=1 ;;
         -h|--help)
-            echo "usage: sysupgrade [-n] [-c] <uImage|http://url>"
+            echo "usage: sysupgrade [-n] [-c] [-k] <uImage|http://url>"
             echo "  -n  write but do not reboot"
             echo "  -c  also erase /mnt/cfg (factory reset)"
+            echo "  -k  skip the signature check (for images you built yourself)"
             echo "Settings in /mnt/cfg are kept unless -c is given."
             exit 0 ;;
         -*) echo "sysupgrade: unknown option $1"; exit 1 ;;
@@ -1421,7 +1456,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-[ -n "$SRC" ] || { echo "usage: sysupgrade [-n] [-c] <uImage|http://url>"; exit 1; }
+[ -n "$SRC" ] || { echo "usage: sysupgrade [-n] [-c] [-k] <uImage|http://url>"; exit 1; }
 
 line=$(grep '"system"' /proc/mtd)
 [ -n "$line" ] || {
@@ -1456,7 +1491,13 @@ case "$SRC" in
         scratch_mount
         echo "sysupgrade: downloading $SRC"
         wget -O $SCRATCH/sysupgrade.bin "$SRC" || exit 1
+        if [ $INSECURE -eq 0 ]; then
+            wget -O $SCRATCH/sysupgrade.sig "$SRC.sig" 2>/dev/null &&
+                SIG=$SCRATCH/sysupgrade.sig
+        fi
         SRC=$SCRATCH/sysupgrade.bin ;;
+    *)
+        [ -f "$SRC.sig" ] && SIG=$SRC.sig ;;
 esac
 [ -f "$SRC" ] || { echo "sysupgrade: $SRC not found"; exit 1; }
 
@@ -1476,6 +1517,15 @@ if [ "$(od -A n -t x1 -N 4 "$SRC" | tr -d ' \n')" = "504b0304" ]; then
     [ -n "$found" ] || { echo "sysupgrade: no uImage inside the archive"; exit 1; }
     echo "sysupgrade: using $(basename "$found")"
     SRC=$found
+    # CI packs the detached signature alongside the image, so a zip can still be
+    # verified. Named after the image where possible, else the only .sig there.
+    if [ -f "$found.sig" ]; then
+        SIG=$found.sig
+    else
+        for s in $SCRATCH/d/*.sig $SCRATCH/d/*/*.sig; do
+            [ -f "$s" ] && { SIG=$s; break; }
+        done
+    fi
 fi
 
 # Check before erasing, not after: a wrong file leaves an unbootable board and
@@ -1495,6 +1545,27 @@ EXPECT=$((0x$dsize + 64))
     exit 1
 }
 [ "$SIZE" -le "$PSIZE" ] || { echo "sysupgrade: image $SIZE > partition $PSIZE"; exit 1; }
+
+# Signature last, because it is the only check that says where the image came
+# from. The ones above only say it is shaped like a kernel for this board, which
+# an attacker who can rewrite the download can satisfy trivially -- busybox wget
+# does not validate certificates, so the transport proves nothing.
+if [ $INSECURE -eq 1 ]; then
+    echo "sysupgrade: WARNING -- signature check skipped (-k)"
+elif [ ! -x /usr/sbin/verify-sig ]; then
+    echo "sysupgrade: verify-sig is missing from this image" >&2
+    exit 1
+elif [ -z "$SIG" ]; then
+    echo "sysupgrade: no signature found for this image" >&2
+    echo "            expected it next to the image as <name>.sig" >&2
+    echo "            pass -k to install it anyway" >&2
+    exit 1
+elif ! verify-sig "$(sha256sum "$SRC" | cut -c1-64)" "$SIG"; then
+    echo "sysupgrade: SIGNATURE CHECK FAILED -- refusing to install" >&2
+    exit 1
+else
+    echo "sysupgrade: signature OK"
+fi
 
 echo "sysupgrade: $SIZE bytes -> /dev/$MTD ($PSIZE available)"
 echo "sysupgrade: DO NOT POWER OFF. This takes about a minute."
@@ -1521,7 +1592,22 @@ echo "sysupgrade: done, reboot when ready"
 INNER
 chmod +x /usr/sbin/sysupgrade
 
-telnetd -l /bin/sh
+# Telnet. Off unless asked for, and it authenticates when it is on: `telnetd -l
+# /bin/sh` hands a root shell to anyone who can reach port 23, no password, in
+# the clear. That was the lifeline while UART RX was dead and SSH unproven, but
+# SSH works now and keeps its host key across reflashes, so the lifeline is just
+# exposure. Enable with `telnet = 1` in /etc/wfb.conf or telnet=1 on the kernel
+# command line -- the second works even when the filesystem is the problem.
+# /bin/login reads /etc/shadow, so it is only useful with a root password set.
+TELNET_ON=$(conf_get telnet)
+for a in $(cat /proc/cmdline); do
+    case "$a" in telnet=*) TELNET_ON=${a#telnet=} ;; esac
+done
+start_telnetd() {
+    [ "$TELNET_ON" = "1" ] || return 1
+    telnetd -l /bin/login
+}
+start_telnetd && echo "telnet: enabled on port 23 (login required)"
 
 # SSH. Dropbear needs /dev/pts (mounted above) and a writable /var/run for its
 # pid file.
@@ -1587,10 +1673,11 @@ start_dropbear() {
 }
 start_dropbear && echo "ssh: starting in the background"
 
-# Supervisor: telnet is the ONLY interactive console on this board (UART RX is
-# dead), so losing it means a power cycle. Joining the drone's AP can disturb
-# networking -- particularly if its DHCP hands out an address in eth0's subnet --
-# so re-assert eth0 and restart telnetd if either disappears.
+# Supervisor: SSH is the only interactive console on this board unless telnet is
+# switched on (UART RX is dead), so losing it means a power cycle. Joining the
+# drone's AP can disturb networking -- particularly if its DHCP hands out an
+# address in eth0's subnet -- so re-assert eth0 and restart the daemons if any of
+# them disappears.
 (
     while :; do
         # Sleep first. Checking at t=0 races the startup that is still in
@@ -1613,8 +1700,9 @@ start_dropbear && echo "ssh: starting in the background"
         [ -n "$eth_net" ] && route add -net $eth_net.0 netmask 255.255.255.0 dev eth0 2>/dev/null
 
         if ! pidof telnetd > /dev/null 2>&1; then
-            echo "net: telnetd died, restarting" > /dev/console
-            telnetd -l /bin/sh
+            if start_telnetd; then
+                echo "net: telnetd died, restarting" > /dev/console
+            fi
         fi
 
         # The flag means startup is still in progress -- key generation can wait
@@ -1637,7 +1725,7 @@ start_dropbear && echo "ssh: starting in the background"
 ) &
 
 if [ -n "$ETH_IP" ]; then
-    echo "Network: $ETH_IP (static)  ->  telnet $ETH_IP"
+    echo "Network: $ETH_IP (static)  ->  ssh root@$ETH_IP"
     [ -x /sbin/dropbear ] && echo "           ->  ssh root@$ETH_IP"
 else
     echo "Network: eth0 requesting DHCP as 'nvr-gs'"

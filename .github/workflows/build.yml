@@ -171,6 +171,42 @@ jobs:
           cat dist/BUILDINFO
           echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
+      # The board fetches over a connection busybox wget cannot authenticate, so
+      # the signature is what makes an image trustworthy rather than the
+      # transport. Ed25519 over the image's raw SHA-256 digest, which is what
+      # verify-sig on the board expects.
+      #
+      # Unsigned builds are still published: without the secret configured this
+      # is a fork or a first run, and an image nobody can install is less useful
+      # than one that needs -k. sysupgrade refuses unsigned images by default
+      # either way, so the choice stays with whoever installs it.
+      - name: Sign the image
+        id: sign
+        env:
+          SIGNING_KEY: ${{ secrets.FIRMWARE_SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::warning::FIRMWARE_SIGNING_KEY is not set -- publishing unsigned"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$SIGNING_KEY" > /tmp/signing.key
+          chmod 600 /tmp/signing.key
+          sha256sum dist/uImage-sdk | cut -c1-64 | tr -d '\n' | xxd -r -p > /tmp/digest.bin
+          [ "$(stat -c%s /tmp/digest.bin)" = "32" ]
+          openssl pkeyutl -sign -rawin -inkey /tmp/signing.key \
+            -in /tmp/digest.bin -out dist/uImage-sdk.sig
+          shred -u /tmp/signing.key
+          [ "$(stat -c%s dist/uImage-sdk.sig)" = "64" ]
+          # Verify against the committed public key so a mismatched secret fails
+          # here rather than on a board that can no longer be updated remotely.
+          openssl pkey -pubin -inform DER -outform DER \
+            -in <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; cat signing-key.pub) \
+            -pubout > /tmp/pub.der
+          openssl pkeyutl -verify -rawin -pubin -inkey /tmp/pub.der -keyform DER \
+            -in /tmp/digest.bin -sigfile dist/uImage-sdk.sig
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+
       # No private key ships in the image -- host keys are generated on the
       # board's first boot -- so this is safe to publish. Root's password is the
       # documented default; change it with ROOT_PASSWORD when building your own.
@@ -195,6 +231,7 @@ jobs:
         run: |
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
           gh release create latest dist/uImage-sdk dist/SHA256SUMS dist/BUILDINFO \
+            $([ -f dist/uImage-sdk.sig ] && echo dist/uImage-sdk.sig) \
             --title "latest (${{ steps.pkg.outputs.short }})" \
             --notes "Build of ${GITHUB_SHA}.
 

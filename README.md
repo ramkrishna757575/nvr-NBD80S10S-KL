@@ -86,11 +86,23 @@ pieces; `build-sdk.sh` picks up their output automatically if present.
 
 ## Continuous integration
 
-`.github/workflows/build.yml` cross-compiles every source file for ARM against
-MI headers sparse-checked-out from the public SDK repository, and syntax-checks
-the shell scripts. It deliberately does **not** build an image: that needs the
-vendor blobs, and publishing those would mean redistributing XiongMai's
-binaries.
+`.github/workflows/build.yml` runs two jobs.
+
+`validate` cross-compiles every source file for ARM against MI headers
+sparse-checked-out from the public SDK repository, and syntax-checks the shell
+scripts — including the ones generated into the initramfs, which are extracted
+and checked under both `dash` and `busybox sh`.
+
+`firmware` builds a complete flashable image and publishes it to the `latest`
+release, on every push to `master` and on demand. It runs the vendor blobs from
+`vendor/`, the same approach OpenIPC takes with its SigmaStar binaries, so no
+flash dump is needed. Only the newest run per branch survives — every run
+recreates the `latest` tag, so concurrent runs would otherwise race and the
+slower one would win.
+
+There is no nightly cron. Every dependency is pinned to a commit or a version,
+so rebuilding unchanged inputs produces the same image; this repository changing
+is the only thing that can change the output.
 
 ## Flashing
 
@@ -222,6 +234,7 @@ reboot
 | `key` | wfb key pair, generated on first use if absent |
 | `ssid`, `psk` | apfpv mode |
 | `region` | regulatory domain, two-letter country code |
+| `telnet` | `1` enables the telnet console. Off by default — see below |
 
 Precedence is built-in default, then this file, then the kernel command line —
 so `link=`, `apfpv_ssid=`, `apfpv_psk=` and `wifi_cc=` still override it. That
@@ -252,6 +265,80 @@ generating it on this SoC is slow and no current client needs it.
 
 `BAKE_HOST_KEYS=1` embeds the build-time keys instead, for a private build on a
 board with no `cfg` partition.
+
+### Telnet
+
+Off by default. It used to run as `telnetd -l /bin/sh`, which is a root shell for
+anyone who can reach port 23, with no password and nothing encrypted. That was
+defensible while UART RX was dead and SSH unproven; now that SSH works and keeps
+its host key across reflashes, it is only exposure.
+
+Turn it on when SSH itself is what broke:
+
+```
+telnet = 1        # in /mnt/cfg/wfb.conf
+telnet=1          # or on the kernel command line, if the config is unreadable
+```
+
+It runs `/bin/login` when enabled, so it asks for the root password rather than
+handing out a shell. The password still crosses the network in the clear — use
+it to repair the board, then turn it back off.
+
+### Signing images
+
+`sysupgrade` fetches over HTTPS, but BusyBox says plainly what it does not do:
+
+```
+wget: note: TLS certificate validation not implemented
+```
+
+The connection is encrypted and unauthenticated, so anyone able to intercept it
+could serve their own firmware. Checking the uImage header does not help — it
+only proves the file is shaped like a kernel for this board, which is easy to
+fake. The signature is what makes the transport irrelevant.
+
+Every image carries a detached Ed25519 signature over its SHA-256 digest, and
+the board refuses to install one that does not verify against the public key
+built into the running firmware. Trust chains from the firmware already
+installed, so the first image still has to arrive by a route you trust — TFTP
+from U-Boot, or a build of your own.
+
+To publish signed images from your own fork:
+
+```bash
+mkdir -p ~/.config/nvr-signing && chmod 700 ~/.config/nvr-signing
+openssl genpkey -algorithm ed25519 -out ~/.config/nvr-signing/signing.key
+chmod 600 ~/.config/nvr-signing/signing.key
+
+# public half -> committed, compiled into the image
+openssl pkey -in ~/.config/nvr-signing/signing.key -pubout -outform DER \
+  | tail -c 32 > signing-key.pub
+
+# private half -> CI secret, never in the repo
+gh secret set FIRMWARE_SIGNING_KEY < ~/.config/nvr-signing/signing.key
+```
+
+Keep the private key off the build machine if you can, and back it up: losing it
+means no board running the matching public key can be updated remotely again.
+Rotating it needs one `-k` upgrade per board to install the new key.
+
+Without the secret set, CI still publishes — unsigned. `sysupgrade` refuses
+unsigned images unless given `-k`, which is also how you install one you built
+yourself:
+
+```bash
+sysupgrade -k http://192.168.1.9:8000/uImage-sdk
+```
+
+To sign a local build so `-k` is not needed:
+
+```bash
+sha256sum output/uImage-sdk | cut -c1-64 | tr -d '\n' | xxd -r -p > /tmp/d.bin
+openssl pkeyutl -sign -rawin -inkey ~/.config/nvr-signing/signing.key \
+  -in /tmp/d.bin -out output/uImage-sdk.sig
+```
+
+`sysupgrade` looks for `<image>.sig` next to the image, at the same URL or path.
 
 ## Air unit
 

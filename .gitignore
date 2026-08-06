@@ -46,3 +46,9 @@ screenlog*
 # Keeps the generated fallback MAC stable across rebuilds. Per-checkout, so
 # two people building this never collide on the same address.
 .fallback-mac
+
+# Signing keys. Only signing-key.pub (the raw 32-byte public half) belongs in
+# the repo; the private key lives outside it and in the CI secret.
+*.key
+*.pem
+signing.key
