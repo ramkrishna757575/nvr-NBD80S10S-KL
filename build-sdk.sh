@@ -306,15 +306,9 @@ fi
 cp -a $MI_OUT/config/. $INITRAMFS_DIR/config/
 
 # ── RTL8812AU (wfb-ng fork) ───────────────────────────────────────────────────
-# Prebuilt in build/rtl8812au with a vermagic that already matches this kernel.
-# It resolves cfg80211/ieee80211 and usb_* against the kernel, both of which are
-# forced built-in in the kernel config step below.
-RTL_KO=$BUILD_DIR/rtl8812au/88XXau_wfb.ko
-if [ -f $RTL_KO ]; then
-    mkdir -p $INITRAMFS_DIR/lib/modules/wifi
-    cp $RTL_KO $INITRAMFS_DIR/lib/modules/wifi/
-    echo "wifi: staged 88XXau_wfb.ko ($(stat -c%s $RTL_KO) bytes)"
-fi
+# Built further down, once the kernel is configured: an out-of-tree module has to
+# match that config, and the cfg80211/USB symbols it needs are forced built-in
+# there. Staged into the initramfs before the kernel links it in.
 
 # ── wfb-ng binaries ───────────────────────────────────────────────────────────
 # Built separately by ./build-wfb.sh (it fetches libsodium/libpcap/wfb-ng from
@@ -2078,13 +2072,38 @@ make olddefconfig
 # host gcc rejects because -fno-common became the default in gcc 10.
 HOSTCFLAGS="-Wall -Wmissing-prototypes -Wstrict-prototypes -O2 -fomit-frame-pointer -std=gnu89 -fcommon"
 
-# Build Image, not uImage. Two rules in arch/arm/boot/Makefile write uImage:
-# SigmaStar's, which runs as part of the Image recipe and wraps the raw Image
-# with the bundled scripts/mkimage; and the stock one, which wraps zImage. The
-# stock rule needs host mkimage, so on a machine that has it (CI) it silently
-# replaced SigmaStar's uncompressed image with a compressed self-extracting one.
-# The board's stock flow uses the uncompressed form, so ask for that everywhere.
-make -j$JOBS HOSTCFLAGS="$HOSTCFLAGS" Image
+# ── RTL8812AU ─────────────────────────────────────────────────────────────────
+# Built here, not in a script of its own, because it has to see the kernel config
+# set just above: vermagic comes from it and the module would be rejected at
+# insmod otherwise. modules_prepare is enough -- the driver resolves its kernel
+# symbols when it is loaded, not when it is linked, which is why Module.symvers
+# can stay empty. This has to land in the initramfs before Image links it in.
+RTL_DIR=$BUILD_DIR/rtl8812au
+[ -d $RTL_DIR ] || { echo "error: $RTL_DIR missing -- run ./fetch-deps.sh" >&2; exit 1; }
+
+grep -q '<linux/version.h>' $RTL_DIR/core/rtw_br_ext.c ||
+    patch -p1 -d $RTL_DIR < $SCRIPT_DIR/patches/0003-rtl8812au-include-linux-version.patch
+
+make -j$JOBS HOSTCFLAGS="$HOSTCFLAGS" modules_prepare
+# KSRC is := in the driver Makefile, but command line wins over any assignment.
+make -C $RTL_DIR -j$JOBS ARCH=arm CROSS_COMPILE=$CROSS_COMPILE KSRC=$KERNEL_DIR
+
+RTL_KO=$RTL_DIR/88XXau_wfb.ko
+[ -f $RTL_KO ] || { echo "error: driver build produced no 88XXau_wfb.ko" >&2; exit 1; }
+mkdir -p $INITRAMFS_DIR/lib/modules/wifi
+cp $RTL_KO $INITRAMFS_DIR/lib/modules/wifi/
+${CROSS_COMPILE}strip --strip-debug $INITRAMFS_DIR/lib/modules/wifi/88XXau_wfb.ko
+echo "wifi: built 88XXau_wfb.ko ($(stat -c%s $INITRAMFS_DIR/lib/modules/wifi/88XXau_wfb.ko) bytes)"
+
+# Build zImage, not uImage, even though the board boots the uncompressed image.
+# Two rules in arch/arm/boot/Makefile write uImage: SigmaStar's, which hangs off
+# the zImage recipe and wraps the raw Image with the bundled scripts/mkimage; and
+# the stock one, which wraps zImage itself and needs host mkimage. The stock rule
+# is absent here but present on CI runners, so asking for uImage published a
+# compressed self-extracting kernel from CI and an uncompressed one from here.
+# The same zImage recipe also runs ms_builtin_dtb_update.py, which appends the
+# board DTB to Image -- asking for Image alone silently skips it.
+make -j$JOBS HOSTCFLAGS="$HOSTCFLAGS" zImage
 
 UIMAGE=$KERNEL_DIR/arch/arm/boot/uImage
 if [ ! -f $UIMAGE ]; then
