@@ -34,24 +34,57 @@ RTL8812AU ──► wpa_supplicant ──► DHCP ──► RTSP client ──�
 
 ## Building
 
-Everything is fetched and built by one script. Expect a long first run.
-
 ```bash
-./build-sdk.sh
+./fetch-deps.sh     # SDK, toolchain, BusyBox, driver source, and vendor blobs
+./build-sdk.sh      # kernel + initramfs + MI stack + players
 ```
 
 Output is `output/uImage-sdk` — a single ~11 MB uImage with the kernel and an
 embedded initramfs. The script prints the exact flashing commands for the image
 it just built, and fails if the image would no longer fit in flash.
 
+> **You need a dump of your own board's flash.** The XiongMai kernel modules,
+> the `/config` panel timing tables and the stock libraries are proprietary and
+> are not redistributed here. `fetch-deps.sh` carves them out of a 16 MB dump
+> placed at `NBD80S10S-KL_original.bin` in the repository root (or passed as an
+> argument). You want that dump anyway — it is the only route back to stock.
+>
+> Read one off the board from U-Boot with
+> `sf probe 0; sf read 0x21000000 0 0x1000000`, or from a running Linux with the
+> whole chip exposed via `mtdparts=NOR_FLASH:16m(whole)` and
+> `nc <pc> 1234 < /dev/mtd0`.
+
+If you keep the dump in a private repository, point the build at it once and
+`fetch-deps.sh` will clone it for you:
+
+```bash
+echo 'git@github.com:you/your-vendor-repo.git' > .vendor-repo   # gitignored
+```
+
+Any 16 MB `.bin` at the top of that repo is used, so it can keep a
+board-specific name. `VENDOR_REPO=` and `VENDOR_DUMP=` work as one-off
+environment overrides.
+
+The modules are not visible in the extracted squashfs trees: they live inside
+`usr` as `lib/modules.tar.lzma`, which `fetch-deps.sh` unpacks.
+
 Useful variables:
 
 | | |
 | --- | --- |
 | `MI_SETS="xm"` | Which MI module sets to ship. Default `xm`, the only set that both decodes and drives HDMI. Use `MI_SETS="xm alkaid"` to bisect driver problems again. |
+| `FALLBACK_MAC=` | Pin the fallback MAC instead of generating a random one, for reproducible builds. |
 
 `build-wfb.sh` builds the wfb-ng binaries and `build-apfpv.sh` the Wi-Fi client
 pieces; `build-sdk.sh` picks up their output automatically if present.
+
+## Continuous integration
+
+`.github/workflows/build.yml` cross-compiles every source file for ARM against
+MI headers sparse-checked-out from the public SDK repository, and syntax-checks
+the shell scripts. It deliberately does **not** build an image: that needs the
+vendor blobs, and publishing those would mean redistributing XiongMai's
+binaries.
 
 ## Flashing
 
@@ -90,11 +123,18 @@ bootm 0x21000000
 Then:
 
 ```
-setenv bootcmd 'gpio output 25 1;sf probe 0;sf read 0x21000000 0x50000 0xb00000;bootm 0x21000000'
-setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080
+setenv bootargs 'console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 ethaddr=${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'
+setenv setargs 'setenv bootargs ${bootargs}'
+setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x50000 0xb00000;bootm 0x21000000'
 setenv bootdelay 3
 saveenv
 ```
+
+`run setargs` is what expands `${ethaddr}` — plain `bootm` does not substitute
+U-Boot variables, which is why the stock `bootcmd` used the same indirection.
+The board's real MAC therefore comes from its own U-Boot environment and no
+address is baked into the image; if it is missing, the firmware falls back to a
+locally administered address generated at build time.
 
 `gpio output 25 1` is the first thing the stock `bootcmd` does. Its purpose is
 undocumented, so it is kept. `bootdelay 3` replaces the stock `0`, which is why
@@ -129,8 +169,24 @@ the prompt used to be nearly impossible to catch.
 | `mi-player` | The player; `-h` for options |
 
 **UART RX does not work under Linux** (TX only) — the SigmaStar serial driver
-never delivers input. U-Boot's RX is fine. Use telnet on `192.168.1.10` for an
-interactive shell.
+never delivers input. U-Boot's RX is fine. Telnet and SSH are the only
+interactive shells.
+
+### Finding the board
+
+`eth0` uses DHCP and sends the hostname `nvr-gs`, so it shows up under that
+name in the router's client list. The address is also printed on the serial
+console when the lease arrives and displayed on the HDMI overlay. With no DHCP
+server on the link it falls back to `192.168.1.10`.
+
+Pass `ipaddr=A.B.C.D` on the kernel command line for a fixed address instead.
+If you do, keep it outside the router's DHCP pool — otherwise the pool can
+lease that same address to another device while the board is off, and telnet
+then reaches the wrong host.
+
+The MAC comes from U-Boot's `ethaddr`, which only reaches the kernel if bootargs
+are built *inside* `setargs` (U-Boot expands `${}` one level only). Without it
+the board uses the locally administered address cached in `.fallback-mac`.
 
 ## Air unit
 
@@ -163,6 +219,7 @@ use `mi-player -u 5600`.
 ## Repository layout
 
 ```
+fetch-deps.sh       download the public prerequisites into build/
 build-sdk.sh        main build: kernel, initramfs, MI stack, players
 build-wfb.sh        wfb-ng binaries
 build-apfpv.sh      wpa_supplicant and Wi-Fi client pieces

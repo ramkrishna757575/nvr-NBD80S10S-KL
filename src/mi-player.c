@@ -814,7 +814,7 @@ int main(int argc, char **argv)
     const char *dump = NULL;
     int dump_fd = -1;
     size_t dump_left = 8u * 1024 * 1024;   /* tmpfs is RAM; do not fill it */
-    int udp_port = 5600, in_fd, i;
+    int udp_port = 5600, in_fd = -1, i;
     int raw = 0, raw_forced = 0, detected = 0;
     unsigned long long frames = 0, bytes = 0, loops = 0;
     uint8_t *buf;

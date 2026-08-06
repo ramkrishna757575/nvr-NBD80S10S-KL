@@ -215,6 +215,9 @@ static void read_operstate(const char *iface, char *out, size_t len)
     close(fd);
 }
 
+/* The wired interface carrying the telnet console. */
+#define MGMT_IFACE "eth0"
+
 static void read_ipv4(const char *iface, char *out, size_t len)
 {
     struct ifreq ifr;
@@ -243,6 +246,37 @@ static void read_ipv4(const char *iface, char *out, size_t len)
 }
 
 /*
+ * Wi-Fi status, published by apfpv as key=value lines.
+ *
+ * The OSD is the only display this board has whenever the video plane is idle,
+ * and neither serial nor telnet is guaranteed to be attached in the field. An
+ * association failure therefore has to be legible here: whether the AP was
+ * visible at all, on what band, and why the join was refused.
+ */
+#define WIFI_STATUS "/tmp/wifi-status"
+
+static void read_kv(const char *path, const char *key, char *out, size_t len)
+{
+    FILE *f;
+    char line[192];
+    size_t klen = strlen(key);
+
+    out[0] = 0;
+    f = fopen(path, "r");
+    if (!f)
+        return;
+
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, key, klen) != 0 || line[klen] != '=')
+            continue;
+        line[strcspn(line, "\r\n")] = 0;
+        snprintf(out, len, "%s", line + klen + 1);
+        break;
+    }
+    fclose(f);
+}
+
+/*
  * Redraw only the stats block rather than the whole screen: a full 1280x720
  * clear every second is both slow on a 1GHz A7 and visibly flickers.
  */
@@ -262,14 +296,22 @@ static int stats_loop(const char *iface)
         unsigned long long bytes = read_counter(iface, "rx_bytes");
         unsigned long long dp = first ? 0 : pkts - prev_pkts;
         unsigned long long db = first ? 0 : bytes - prev_bytes;
-        char state[32], ip[32], buf[96];
+        char state[32], ip[32], mgmt[32], buf[96];
+        char ssid[48], freq[16], sig[16], wstate[24], reg[8], note[72];
         int y = y0;
 
         read_operstate(iface, state, sizeof(state));
         read_ipv4(iface, ip, sizeof(ip));
+        read_ipv4(MGMT_IFACE, mgmt, sizeof(mgmt));
+        read_kv(WIFI_STATUS, "ssid",   ssid,   sizeof(ssid));
+        read_kv(WIFI_STATUS, "freq",   freq,   sizeof(freq));
+        read_kv(WIFI_STATUS, "signal", sig,    sizeof(sig));
+        read_kv(WIFI_STATUS, "state",  wstate, sizeof(wstate));
+        read_kv(WIFI_STATUS, "reg",    reg,    sizeof(reg));
+        read_kv(WIFI_STATUS, "note",   note,   sizeof(note));
 
         /* Clear just the text block. */
-        fill_rect(0, 0, (int)vinfo.xres, y0 + line_h * 7, pack(0, 0, 40));
+        fill_rect(0, 0, (int)vinfo.xres, y0 + line_h * 13, pack(0, 0, 40));
 
         draw_text(30, y, "OPENIPC GROUND STATION", scale, pack(0, 255, 0));
         y += line_h + scale * 2;
@@ -279,7 +321,47 @@ static int stats_loop(const char *iface)
                   strcmp(state, "up") == 0 ? pack(0, 255, 0) : pack(255, 200, 0));
         y += line_h;
 
-        snprintf(buf, sizeof(buf), "IP %s", ip);
+        /* An AP that is not in the scan looks nothing like one that is there
+           but refusing us, so distinguish the two rather than just saying
+           "not connected". */
+        if (ssid[0] && freq[0])
+            snprintf(buf, sizeof(buf), "AP %s %sMHZ %sDBM", ssid, freq, sig);
+        else if (ssid[0])
+            snprintf(buf, sizeof(buf), "AP %s NOT VISIBLE", ssid);
+        else
+            snprintf(buf, sizeof(buf), "AP SCANNING");
+        draw_text(30, y, buf, scale,
+                  freq[0] ? pack(255, 255, 255) : pack(255, 80, 80));
+        y += line_h;
+
+        if (wstate[0] || reg[0]) {
+            snprintf(buf, sizeof(buf), "WPA %s  REG %s",
+                     wstate[0] ? wstate : "-", reg[0] ? reg : "-");
+            draw_text(30, y, buf, scale,
+                      strcmp(wstate, "COMPLETED") == 0 ? pack(0, 255, 0)
+                                                       : pack(255, 200, 0));
+            y += line_h;
+        }
+
+        if (note[0]) {
+            snprintf(buf, sizeof(buf), "%s", note);
+            draw_text(30, y, buf, scale, pack(255, 200, 0));
+            y += line_h;
+        }
+
+        /* The address to telnet to. This lives on a different interface from
+           the one being counted, and it is the one that goes missing when the
+           drone's DHCP collides with it -- so show it explicitly rather than
+           leaving the operator to guess where the board went. */
+        if (strcmp(iface, MGMT_IFACE) != 0) {
+            snprintf(buf, sizeof(buf), "TELNET %s", mgmt);
+            draw_text(30, y, buf, scale,
+                      strcmp(mgmt, "NONE") == 0 ? pack(255, 80, 80)
+                                                : pack(0, 255, 0));
+            y += line_h;
+        }
+
+        snprintf(buf, sizeof(buf), "%s IP %s", iface, ip);
         draw_text(30, y, buf, scale, pack(255, 255, 255));
         y += line_h;
 
@@ -376,11 +458,18 @@ int main(int argc, char **argv)
             y += 9 * scale;
         }
     } else {
+        char mgmt[32], line[64];
+
         draw_text(30, y, "OPENIPC GROUND STATION", scale, pack(0, 255, 0));
         y += 11 * scale;
         draw_text(30, y, "SSR621Q - HDMI OK", scale, pack(255, 255, 255));
         y += 9 * scale;
-        draw_text(30, y, "IP 192.168.1.10", scale, pack(255, 255, 255));
+        /* Read it rather than assuming: the wired address is configurable and
+           can also be lost to a DHCP collision, and a splash that confidently
+           states the wrong address is worse than one that admits it. */
+        read_ipv4(MGMT_IFACE, mgmt, sizeof(mgmt));
+        snprintf(line, sizeof(line), "IP %s", mgmt);
+        draw_text(30, y, line, scale, pack(255, 255, 255));
     }
 
     munmap(fbmem, screensize);

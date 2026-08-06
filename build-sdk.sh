@@ -230,7 +230,7 @@ fi
 # applet disabled, so its binary has no mount/echo/cat and yields a useless initramfs.
 echo "=== [3/5] Building BusyBox ==="
 if [ ! -f $BUSYBOX_SRC/Makefile ]; then
-    echo "error: busybox source not found at $BUSYBOX_SRC; run ./build.sh first" >&2
+    echo "error: busybox source not found at $BUSYBOX_SRC; run ./fetch-deps.sh first" >&2
     exit 1
 fi
 
@@ -328,13 +328,129 @@ else
     echo "apfpv: not built (run ./build-apfpv.sh) -- skipping"
 fi
 
+# ── Dropbear SSH ──────────────────────────────────────────────────────────────
+# Built by ./build-dropbear.sh. telnetd stays as the recovery path (it needs no
+# keys and no working clock), but SSH is the sane way to manage the board: it is
+# authenticated, encrypted, and brings scp for pushing a rebuilt binary onto the
+# running system instead of reflashing.
+DROPBEAR_OUT=$BUILD_DIR/dropbear-out
+if [ -x $DROPBEAR_OUT/bin/dropbearmulti ]; then
+    mkdir -p $INITRAMFS_DIR/etc/dropbear $INITRAMFS_DIR/root/.ssh \
+             $INITRAMFS_DIR/usr/bin $INITRAMFS_DIR/var/run
+    cp $DROPBEAR_OUT/bin/dropbearmulti $INITRAMFS_DIR/sbin/
+    # dropbearmulti dispatches on argv[0], so each tool is just a symlink.
+    ln -sf /sbin/dropbearmulti $INITRAMFS_DIR/sbin/dropbear
+    ln -sf /sbin/dropbearmulti $INITRAMFS_DIR/sbin/dropbearkey
+    ln -sf /sbin/dropbearmulti $INITRAMFS_DIR/usr/bin/dbclient
+    ln -sf /sbin/dropbearmulti $INITRAMFS_DIR/usr/bin/scp
+    ln -sf /usr/bin/dbclient   $INITRAMFS_DIR/usr/bin/ssh
+
+    # Host keys are generated once at build time rather than on the target: the
+    # rootfs is a RAM initramfs, so on-target keys would change every reboot and
+    # every connection would trip the changed-host-key warning.
+    cp $DROPBEAR_OUT/etc/dropbear/dropbear_*_host_key $INITRAMFS_DIR/etc/dropbear/ 2>/dev/null
+    chmod 600 $INITRAMFS_DIR/etc/dropbear/* 2>/dev/null || true
+
+    # Public key auth. Point SSH_PUBKEY at a different key to override.
+    SSH_PUBKEY=${SSH_PUBKEY:-$(ls "$HOME"/.ssh/id_*.pub 2>/dev/null | head -1)}
+    if [ -n "$SSH_PUBKEY" ] && [ -f "$SSH_PUBKEY" ]; then
+        cp "$SSH_PUBKEY" $INITRAMFS_DIR/root/.ssh/authorized_keys
+        chmod 700 $INITRAMFS_DIR/root/.ssh
+        chmod 600 $INITRAMFS_DIR/root/.ssh/authorized_keys
+        echo "ssh: authorized_keys from $SSH_PUBKEY"
+    else
+        echo "ssh: no public key found -- set SSH_PUBKEY=/path/to/key.pub" >&2
+    fi
+
+    # Password login. Defaults to the OpenIPC-style well-known password so the
+    # board is usable out of the box and matches what the air unit ships with.
+    # Override at build time:
+    #
+    #   ROOT_PASSWORD='secret'   ./build-sdk.sh   # hashed here, SHA-512
+    #   ROOT_PW_HASH='$6$...'    ./build-sdk.sh   # pre-hashed
+    #
+    # This is a documented default, not a hidden one: anyone with the image can
+    # read the hash, so treat the wired side as trusted-LAN-only and change it
+    # if the board is ever exposed beyond that.
+    ROOT_PASSWORD=${ROOT_PASSWORD:-12345678}
+    if [ -n "$ROOT_PASSWORD" ] && [ -z "$ROOT_PW_HASH" ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            ROOT_PW_HASH=$(openssl passwd -6 "$ROOT_PASSWORD")
+        elif command -v mkpasswd >/dev/null 2>&1; then
+            ROOT_PW_HASH=$(mkpasswd -m sha-512 "$ROOT_PASSWORD")
+        else
+            echo "ssh: need openssl or mkpasswd to hash ROOT_PASSWORD" >&2
+            exit 1
+        fi
+    fi
+    if [ -n "$ROOT_PW_HASH" ]; then
+        SSH_PW_LOGIN=1
+        if [ "$ROOT_PASSWORD" = "12345678" ]; then
+            echo "ssh: password login enabled for root (default 12345678)"
+        else
+            echo "ssh: password login enabled for root (custom password)"
+        fi
+    else
+        SSH_PW_LOGIN=0
+        ROOT_PW_HASH='*'
+        if [ -z "$SSH_PUBKEY" ]; then
+            echo "ssh: WARNING - no key and no password; SSH will refuse all logins" >&2
+            echo "ssh: telnet remains available on the wired interface" >&2
+        fi
+    fi
+    echo "$SSH_PW_LOGIN" > $INITRAMFS_DIR/etc/ssh-password-login
+    echo "dropbear: staged ($(stat -c%s $DROPBEAR_OUT/bin/dropbearmulti) bytes, \
+$(ls $INITRAMFS_DIR/etc/dropbear | wc -l) host keys)"
+else
+    echo "dropbear: not built (run ./build-dropbear.sh) -- skipping"
+    ROOT_PW_HASH=${ROOT_PW_HASH:-'*'}
+fi
+
+# ── accounts ──────────────────────────────────────────────────────────────────
+# Dropbear looks root up in /etc/passwd for its shell and home directory and
+# refuses the login if the entry is missing, so these are required whether or
+# not password auth is in use.
+mkdir -p $INITRAMFS_DIR/etc $INITRAMFS_DIR/root
+cat > $INITRAMFS_DIR/etc/passwd << EOF
+root:x:0:0:root:/root:/bin/sh
+EOF
+cat > $INITRAMFS_DIR/etc/group << EOF
+root:x:0:
+EOF
+cat > $INITRAMFS_DIR/etc/shadow << EOF
+root:$ROOT_PW_HASH:19000:0:99999:7:::
+EOF
+chmod 600 $INITRAMFS_DIR/etc/shadow
+# /bin/sh is BusyBox ash; without this dropbear's shell lookup fails.
+echo "/bin/sh" > $INITRAMFS_DIR/etc/shells
+# glibc consults this before it will look in /etc/passwd at all. It falls back
+# to a compiled-in default when the file is absent, but being explicit costs
+# nothing and makes the dependency on libnss_files visible.
+cat > $INITRAMFS_DIR/etc/nsswitch.conf << 'EOF'
+passwd:     files
+group:      files
+shadow:     files
+hosts:      files dns
+EOF
+cat > $INITRAMFS_DIR/etc/hosts << 'EOF'
+127.0.0.1   localhost
+EOF
+
 # ── glibc runtime ─────────────────────────────────────────────────────────────
 # BusyBox is static so nothing needed a libc so far, but the MI libraries are
 # dynamic. Without the loader the shell reports a bare "not found" for any
 # dynamically linked binary, which looks like a missing file.
 SYSROOT=$(${CROSS_COMPILE}gcc -print-sysroot)
+# libcrypt/libutil are dropbear's: crypt() for password hashes and openpty()
+# for the login pty. Missing ones show up only as a bare "not found" at runtime.
+#
+# libnss_files is subtler and not a NEEDED entry of anything -- glibc dlopen()s
+# it by name from getpwnam()/getspnam(). Without it every account lookup fails,
+# so dropbear rejects both password AND key logins with a plain "Permission
+# denied" and no hint that /etc/passwd was never read.
 for f in ld-linux-armhf.so.3 libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 \
-         librt.so.1 libgcc_s.so.1 libstdc++.so.6; do
+         librt.so.1 libgcc_s.so.1 libstdc++.so.6 libcrypt.so.1 libutil.so.1 \
+         libnss_files.so.2 libnss_dns.so.2 libresolv.so.2; do
     src=$(find $SYSROOT/lib $SYSROOT/usr/lib -maxdepth 1 -name "$f" 2>/dev/null | head -1)
     [ -n "$src" ] && cp -aL "$src" $INITRAMFS_DIR/lib/
 done
@@ -566,6 +682,14 @@ cat > /bin/load-wifi << 'INNER'
 KO=/lib/modules/wifi/88XXau_wfb.ko
 [ -f $KO ] || { echo "no $KO"; exit 1; }
 
+# Regulatory domain. Without one the driver runs in the world domain (00),
+# which forbids active scanning and transmission on most 5GHz channels: the
+# adapter then either sees nothing or catches a stray beacon on a passive scan
+# and goes dormant instead of associating. The driver takes an alpha2 directly,
+# so this works without CRDA or a regulatory.db.
+CC=$(cat /etc/wifi-cc 2>/dev/null)
+[ -n "$CC" ] || CC=00
+
 if grep -q "^88XXau_wfb " /proc/modules; then
     echo "88XXau_wfb already loaded"
 else
@@ -589,8 +713,8 @@ else
         echo "         if enumeration failed, move it to the other USB port"
     fi
 
-    insmod $KO "$@" || exit 1
-    echo "88XXau_wfb loaded"
+    insmod $KO rtw_country_code=$CC "$@" || exit 1
+    echo "88XXau_wfb loaded (regulatory domain $CC)"
     # Let the driver finish attaching before anyone touches the interface. The
     # 8812AU re-enumerates once on probe, and poking it during that window seems
     # to provoke a disconnect/re-enumerate loop.
@@ -656,16 +780,24 @@ T=$(cut -d. -f1 /proc/uptime)
 case "$EVENT" in
     CONNECTED)
         echo "[${T}s] apfpv: $IFACE associated, requesting DHCP" >> $LOG
-        killall udhcpc 2>/dev/null
-        udhcpc -i $IFACE -s /usr/share/udhcpc/apfpv.script -b -t 10 -A 5 >> $LOG 2>&1
+        # By pid file, not killall: eth0 runs its own udhcpc now, and killing
+        # that one leaves the management address unrenewed.
+        [ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
+        udhcpc -i $IFACE -s /usr/share/udhcpc/apfpv.script \
+               -p /var/run/udhcpc.$IFACE.pid -b -t 10 -A 5 >> $LOG 2>&1
         sleep 2
         ip=$(ifconfig $IFACE | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
         echo "[${T}s] apfpv: $IFACE address ${ip:-none}" >> $LOG
+        # Keep the on-screen overlay honest across reconnects.
+        sed -i 's/^state=.*/state=COMPLETED/; s/^note=.*/note=/' \
+            /tmp/wifi-status 2>/dev/null
         ;;
     DISCONNECTED)
         echo "[${T}s] apfpv: $IFACE disconnected" >> $LOG
-        killall udhcpc 2>/dev/null
+        [ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
         ifconfig $IFACE 0.0.0.0
+        sed -i 's/^state=.*/state=DISCONNECTED/; s/^note=.*/note=LINK LOST/' \
+            /tmp/wifi-status 2>/dev/null
         fpv-stop
         ;;
 esac
@@ -841,8 +973,10 @@ CONF=/tmp/wpa_apfpv.conf
 mkdir -p /var/run
 
 # wfb-ng and apfpv are mutually exclusive: one needs monitor mode, the other
-# managed. Stop anything holding the interface first.
-killall wfb_rx wpa_supplicant udhcpc 2>/dev/null
+# managed. Stop anything holding the interface first -- but only this
+# interface's DHCP client, since eth0 has one of its own.
+killall wfb_rx wpa_supplicant 2>/dev/null
+[ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
 rm -rf /var/run/wpa_supplicant
 sleep 1
 
@@ -878,6 +1012,40 @@ if ! wpa_supplicant -B -i $IFACE -c $CONF -D nl80211 >/tmp/wpa.log 2>&1; then
     fi
 fi
 
+# Publish what the overlay needs to explain itself. fb-splash --stats polls
+# /tmp/wifi-status once a second; without it the only on-screen symptom of a
+# failed join is "dormant", which says nothing about whether the AP was even
+# visible or why it refused us.
+wifi_status() {
+    ST=$(wpa_cli -i $IFACE status 2>/dev/null)
+    SS=$(echo "$ST" | sed -n 's/^ssid=//p')
+    WS=$(echo "$ST" | sed -n 's/^wpa_state=//p')
+    FQ=$(echo "$ST" | sed -n 's/^freq=//p')
+    SG=$(iw dev $IFACE link 2>/dev/null | sed -n 's/.*signal: \(-\{0,1\}[0-9]*\).*/\1/p')
+    # Not associated: fall back to the scan so we can still say whether the AP
+    # is on the air and on which band.
+    if [ -z "$SS" ]; then
+        SS=$SSID
+        SCAN=$(iw dev $IFACE scan 2>/dev/null | awk -v s="$SSID" '
+            /freq:/{f=$2} /signal:/{g=$2}
+            /SSID: /{ if (substr($0, index($0,": ")+2) == s) { print f, g; exit } }')
+        if [ -n "$SCAN" ]; then
+            FQ=${SCAN%% *}
+            SG=${SCAN##* }
+        else
+            FQ=""
+        fi
+    fi
+    {
+        echo "ssid=$SS"
+        echo "freq=$FQ"
+        echo "signal=$SG"
+        echo "state=${WS:-UNKNOWN}"
+        echo "reg=$(cat /etc/wifi-cc 2>/dev/null)"
+        echo "note=$1"
+    } > /tmp/wifi-status
+}
+
 echo "apfpv: waiting for association ..."
 n=0
 while [ $n -lt 20 ]; do
@@ -885,6 +1053,37 @@ while [ $n -lt 20 ]; do
     n=$((n + 1))
     sleep 1
 done
+
+# If it did not come up, say why. wpa_supplicant keeps retrying in the
+# background, so this is diagnosis rather than failure -- but without it the
+# only symptom is a dormant interface, which says nothing about whether the AP
+# was even visible, what band it is on, or whether the key was rejected.
+if ! wpa_cli -i $IFACE status 2>/dev/null | grep -q "wpa_state=COMPLETED"; then
+    echo "apfpv: not associated after ${n}s. Visible networks:"
+    iw dev $IFACE scan 2>/dev/null |
+        awk '/^BSS/{bss=$2} /freq:/{f=$2} /signal:/{s=$2} /SSID:/{
+              printf "  %-20s %s MHz %s dBm  %s\n", $2, f, s, bss }' |
+        head -12
+    echo "apfpv: regulatory domain $(cat /etc/wifi-cc 2>/dev/null)"
+    echo "apfpv: wpa_state=$(wpa_cli -i $IFACE status 2>/dev/null | sed -n 's/^wpa_state=//p')"
+    grep -iE "auth|assoc|reason|WRONG_KEY|4-Way" /tmp/wpa.log 2>/dev/null | tail -5
+    echo "apfpv: if the AP is 5GHz, set the regulatory domain: wifi_cc=XX on the"
+    echo "apfpv: kernel command line (default 00 blocks most 5GHz channels)"
+
+    # Pick the most specific explanation available for the overlay.
+    REASON=$(grep -oiE "WRONG_KEY|4-Way handshake failed|authentication.*timed out|association.*timed out" \
+             /tmp/wpa.log 2>/dev/null | tail -1)
+    if [ -z "$REASON" ]; then
+        if iw dev $IFACE scan 2>/dev/null | grep -q "SSID: $SSID"; then
+            REASON="AP SEEN BUT JOIN FAILED"
+        else
+            REASON="AP NOT FOUND - CHECK BAND/REG"
+        fi
+    fi
+    wifi_status "$REASON"
+else
+    wifi_status ""
+fi
 
 # wpa_supplicant keeps scanning on its own, so a drone that is not powered up yet
 # is not an error -- the action script will pick it up whenever it appears.
@@ -920,11 +1119,111 @@ chmod +x /bin/apfpv
 
 # UART RX does not reach userspace on this board (TX works, typed input never
 # arrives), so bring up networking and offer a telnet shell as the usable console.
-# MAC is set explicitly because the SDK emac driver has no board MAC to read.
+#
+# The SDK emac driver has no MAC of its own. Take the board's real address from
+# the U-Boot environment, passed on the kernel command line as ethaddr=. The
+# bootcmd must build bootargs *inside* setargs -- U-Boot expands ${} only one
+# level deep, so a stored bootargs containing ${ethaddr} arrives here verbatim.
+# Nothing board-specific is baked into the image; the fallback in
+# /etc/fallback-mac is a locally administered address generated at build time
+# and only used if U-Boot did not supply one.
+MAC=""
+ETH_IP=""
+for arg in $(cat /proc/cmdline); do
+    case $arg in
+        ethaddr=*) MAC=${arg#ethaddr=} ;;
+        ipaddr=*)  ETH_IP=${arg#ipaddr=} ;;
+    esac
+done
+# U-Boot only expands ${} one level deep, so a bootargs containing the literal
+# text "${ethaddr}" reaches us unexpanded. Treat that as "not supplied".
+case $MAC in *'$'*|*'{'*) MAC="" ;; esac
+if [ -z "$MAC" ]; then
+    MAC=$(cat /etc/fallback-mac 2>/dev/null)
+    echo "net: no usable ethaddr= on the command line, using fallback $MAC"
+    echo "net: to fix, build bootargs inside setargs so \${ethaddr} expands"
+fi
+
+# 192.168.1.10 sits inside the DHCP pool of most home routers, so claiming it
+# statically means it can also be leased to another device while the board is
+# off -- after which telnet reaches the wrong host and the board looks dead.
+# So: DHCP by default, and this address only as a fallback for when there is no
+# DHCP server at all (a bare switch, or a cable straight to a PC). Pass ipaddr=
+# on the kernel command line to force a static address instead.
+ETH_FALLBACK_IP=192.168.1.10
 ifconfig lo 127.0.0.1 up
-ifconfig eth0 hw ether 00:12:33:90:23:E5
-ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up
+[ -n "$MAC" ] && ifconfig eth0 hw ether $MAC
+# The router lists this in its client table, which is how you find the board
+# once its address is no longer fixed.
+hostname nvr-gs
+
+mkdir -p /usr/share/udhcpc
+echo "$ETH_FALLBACK_IP" > /tmp/eth-fallback-ip
+cat > /usr/share/udhcpc/eth0.script << 'INNER'
+#!/bin/sh
+case "$1" in
+    deconfig)
+        ifconfig $interface 0.0.0.0
+        ;;
+    leasefail|nak)
+        fb=$(cat /tmp/eth-fallback-ip 2>/dev/null)
+        [ -n "$fb" ] || fb=192.168.1.10
+        ifconfig $interface $fb netmask 255.255.255.0 up
+        echo "$fb" > /tmp/eth-ip
+        echo "net: no DHCP lease on $interface, using fallback $fb" > /dev/console
+        ;;
+    bound|renew)
+        ifconfig $interface $ip netmask ${subnet:-255.255.255.0} up
+        echo "$ip" > /tmp/eth-ip
+        # Take the default route only if nothing holds it: the drone's AP is not
+        # an internet gateway, so eth0 is the sensible owner, but never steal it.
+        if [ -n "$router" ] && ! route -n 2>/dev/null | grep -q '^0\.0\.0\.0'; then
+            route add default gw ${router%% *} dev $interface 2>/dev/null
+        fi
+        if [ -n "$dns" ]; then
+            : > /etc/resolv.conf
+            for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
+        fi
+        echo "net: $interface $ip  ->  telnet $ip / ssh root@$ip" > /dev/console
+        ;;
+esac
+exit 0
+INNER
+chmod +x /usr/share/udhcpc/eth0.script
+
+# Backgrounded so a missing DHCP server cannot hold up video for the retry
+# window. udhcpc daemonises itself once it has a lease; -b makes it do the same
+# after giving up, so it keeps retrying behind the fallback address.
+start_eth() {
+    if [ -n "$ETH_IP" ]; then
+        ifconfig eth0 $ETH_IP netmask 255.255.255.0 up
+        echo "$ETH_IP" > /tmp/eth-ip
+    else
+        ifconfig eth0 0.0.0.0 up
+        udhcpc -i eth0 -s /usr/share/udhcpc/eth0.script -x hostname:nvr-gs \
+               -p /var/run/udhcpc.eth0.pid -t 4 -T 2 -A 10 -b >/dev/null 2>&1 &
+    fi
+}
+start_eth
 telnetd -l /bin/sh
+
+# SSH. Dropbear needs /dev/pts (mounted above) and a writable /var/run for its
+# pid file. -R would generate host keys on demand, but they are baked into the
+# image instead so the board's identity survives a reboot -- this is a RAM
+# rootfs, so anything generated at runtime is lost.
+start_dropbear() {
+    [ -x /sbin/dropbear ] || return 1
+    mkdir -p /var/run
+    # Refuse password logins unless the image was built with a root password
+    # hash, otherwise the account is locked ('*') and dropbear would just be
+    # answering connections it can never authenticate.
+    if [ "$(cat /etc/ssh-password-login 2>/dev/null)" = "1" ]; then
+        dropbear -p 22 >/dev/null 2>&1
+    else
+        dropbear -p 22 -s >/dev/null 2>&1
+    fi
+}
+start_dropbear && echo "ssh: dropbear listening on 22"
 
 # Supervisor: telnet is the ONLY interactive console on this board (UART RX is
 # dead), so losing it means a power cycle. Joining the drone's AP can disturb
@@ -932,16 +1231,23 @@ telnetd -l /bin/sh
 # so re-assert eth0 and restart telnetd if either disappears.
 (
     while :; do
-        if ! ifconfig eth0 2>/dev/null | grep -q "192.168.1.10"; then
-            echo "net: eth0 address lost, restoring" > /dev/console
-            ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up
+        if ! ifconfig eth0 2>/dev/null | grep -q "inet addr:"; then
+            echo "net: eth0 has no address, restarting" > /dev/console
+            start_eth
         fi
         # Keep eth0's subnet route ahead of any wlan0 route in the same range.
-        route add -net 192.168.1.0 netmask 255.255.255.0 dev eth0 2>/dev/null
+        # Derived from the live address, which DHCP may change.
+        eth_net=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9]*\.[0-9]*\.[0-9]*\)\..*/\1/p')
+        [ -n "$eth_net" ] && route add -net $eth_net.0 netmask 255.255.255.0 dev eth0 2>/dev/null
 
         if ! pidof telnetd > /dev/null 2>&1; then
             echo "net: telnetd died, restarting" > /dev/console
             telnetd -l /bin/sh
+        fi
+
+        if [ -x /sbin/dropbear ] && ! pidof dropbear > /dev/null 2>&1; then
+            echo "net: dropbear died, restarting" > /dev/console
+            start_dropbear
         fi
 
         # With no drone AP in range wpa_supplicant retries forever, so these logs
@@ -957,7 +1263,14 @@ telnetd -l /bin/sh
     done
 ) &
 
-echo "Network: 192.168.1.10  ->  telnet 192.168.1.10"
+if [ -n "$ETH_IP" ]; then
+    echo "Network: $ETH_IP (static)  ->  telnet $ETH_IP"
+    [ -x /sbin/dropbear ] && echo "           ->  ssh root@$ETH_IP"
+else
+    echo "Network: eth0 requesting DHCP as 'nvr-gs'"
+    echo "         the address is printed below once the lease arrives,"
+    echo "         and is shown on the HDMI overlay"
+fi
 echo ""
 
 # Run it automatically: without UART input this is the only way to see the result.
@@ -1017,9 +1330,14 @@ else
     # layer, so a splash may well appear even if the HDMI probe was inconclusive.
     if [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
         sleep 1
+        # The lease may not have arrived yet; the live stats overlay replaces
+        # this line as soon as it does.
+        eth_ip=$(cat /tmp/eth-ip 2>/dev/null)
+        [ -n "$eth_ip" ] || eth_ip=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+        [ -n "$eth_ip" ] || eth_ip="DHCP PENDING"
         fb-splash -p "OPENIPC GROUND STATION" \
                      "SSR621Q HDMI OK" \
-                     "TELNET 192.168.1.10" > /tmp/fb-splash.log 2>&1 \
+                     "TELNET $eth_ip" > /tmp/fb-splash.log 2>&1 \
             && echo "display: splash drawn" \
             || echo "display: splash failed -- see /tmp/fb-splash.log"
     fi
@@ -1038,13 +1356,19 @@ echo ""
 APFPV_ON=1
 APFPV_SSID=OpenIPC
 APFPV_PSK=12345678
+# Regulatory domain for the wifi driver, as an alpha2. The default 00 (world)
+# forbids active scanning and TX on most 5GHz channels, so a 5GHz air unit will
+# not associate reliably. Set this to your own country.
+WIFI_CC=00
 for arg in $(cat /proc/cmdline); do
     case $arg in
         apfpv=off)   APFPV_ON=0 ;;
         apfpv_ssid=*) APFPV_SSID=${arg#apfpv_ssid=} ;;
         apfpv_psk=*)  APFPV_PSK=${arg#apfpv_psk=} ;;
+        wifi_cc=*)    WIFI_CC=${arg#wifi_cc=} ;;
     esac
 done
+echo "$WIFI_CC" > /etc/wifi-cc
 
 if [ $APFPV_ON -eq 1 ]; then
     echo "apfpv: autostarting for SSID '$APFPV_SSID' (log: /tmp/apfpv.log)"
@@ -1290,6 +1614,25 @@ if [ -f $SCRIPT_DIR/assets/test720.h264 ]; then
     cp $SCRIPT_DIR/assets/test720.h264 $INITRAMFS_DIR/usr/share/
 fi
 
+# Fallback MAC, used only if U-Boot did not pass ethaddr= on the command line.
+# Locally administered (02:...) and random, so no real board's address is ever
+# baked into an image. It is cached in .fallback-mac (gitignored) because a MAC
+# that changes on every rebuild makes the DHCP server issue a new lease each
+# time, which strands the old address and breaks ARP for anyone talking to it.
+# Set FALLBACK_MAC in the environment to override.
+mkdir -p $INITRAMFS_DIR/etc
+MAC_CACHE=$SCRIPT_DIR/.fallback-mac
+if [ -z "${FALLBACK_MAC:-}" ] && [ -f "$MAC_CACHE" ]; then
+    FALLBACK_MAC=$(cat "$MAC_CACHE")
+fi
+if [ -z "${FALLBACK_MAC:-}" ]; then
+    FALLBACK_MAC=$(od -An -N5 -tu1 /dev/urandom |
+        awk '{printf "02:%02x:%02x:%02x:%02x:%02x", $1, $2, $3, $4, $5}')
+    echo "$FALLBACK_MAC" > "$MAC_CACHE"
+fi
+echo "$FALLBACK_MAC" > $INITRAMFS_DIR/etc/fallback-mac
+echo "network: fallback MAC $FALLBACK_MAC (real one comes from U-Boot ethaddr=)"
+
 # Strip debug info from every shared library and binary in the rootfs. The
 # toolchains ship unstripped runtimes -- the ARM 8.2 libc-2.28.so alone is
 # 15.8M, libgcc_s.so.1 8.6M -- and the initramfs is unpacked into ramfs at
@@ -1404,8 +1747,18 @@ printf '  sf read 0x21000000 0x%x 0x%x\n' "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  bootm 0x21000000"
 echo ""
 printf 'Then make it permanent:\n'
-printf "  setenv bootcmd 'gpio output 25 1;sf probe 0;sf read 0x21000000 0x%x 0x%x;bootm 0x21000000'\n" \
+printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
+printf "  setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x%x 0x%x;bootm 0x21000000'\n" \
     "$FLASH_OFFSET" "$ERASE_LEN"
-echo "  setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080"
 echo "  setenv bootdelay 3"
 echo "  saveenv"
+echo ""
+echo "Build bootargs INSIDE setargs, as above. U-Boot expands \${} only once, so"
+echo "the older two-step form (setenv bootargs '...\${ethaddr}...' plus a setargs"
+echo "that re-sets it) passes the literal text \${ethaddr} to the kernel and the"
+echo "board falls back to a random MAC. Here \${ethaddr} expands when setargs runs."
+echo ""
+echo "eth0 uses DHCP and registers the hostname 'nvr-gs', so look for that in your"
+echo "router's client list. With no DHCP server it falls back to 192.168.1.10."
+echo "Pass ipaddr=A.B.C.D to force a static address instead -- if you do, keep it"
+echo "outside the router's DHCP pool or the same address can be leased elsewhere."

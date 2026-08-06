@@ -32,3 +32,11 @@ current_state.bin
 .venv/
 screenlog*
 *.log
+
+# Points fetch-deps.sh at the private repo holding the stock flash dump. Local
+# to each checkout, and often a URL with a username in it, so it stays out.
+.vendor-repo
+
+# Keeps the generated fallback MAC stable across rebuilds. Per-checkout, so
+# two people building this never collide on the same address.
+.fallback-mac

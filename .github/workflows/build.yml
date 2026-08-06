@@ -1,148 +1,171 @@
-name: Build NVR Firmware
+name: Build
 
 on:
   push:
-    branches:
-      - master
-  workflow_dispatch: # also allow manual trigger from the Actions UI
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# Two jobs.
+#
+# 'validate' always runs and needs nothing private: it cross-compiles every
+# source file for ARM against the public SigmaStar headers and syntax-checks
+# every script, including the ones generated into the initramfs.
+#
+# 'firmware' builds a real image, and only runs if VENDOR_DEPLOY_KEY is set --
+# a read-only deploy key for the private repository holding the board's flash
+# dump. The XiongMai kernel modules, /config panel tables and libraries are
+# carved out of that dump and are proprietary.
+#
+# The image is deliberately NOT uploaded as an artifact. Artifacts of a public
+# repository are downloadable by anyone, so publishing one would redistribute
+# XiongMai's code -- exactly what keeping the dump private avoids. The value
+# here is proving the build completes: linking, initramfs assembly and the
+# flash-size check are things the compile-only job cannot reach.
 
 jobs:
-  build:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
-    permissions:
-      contents: write # needed to create/update the rolling release
-
+  validate:
+    name: Cross-compile sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      # ── Checkout ─────────────────────────────────────────────────────────────
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # ── Toolchain & build dependencies ───────────────────────────────────────
-      - name: Install dependencies
+      - name: Install ARM cross toolchain
         run: |
-          # Enable armhf multiarch
-          sudo dpkg --add-architecture armhf
-          # Restrict the runner's existing sources to amd64 so they don't 404 on armhf
-          sudo sed -i 's/^deb http/deb [arch=amd64] http/' /etc/apt/sources.list
-          sudo sed -i 's/^deb mirror/deb [arch=amd64] mirror/' /etc/apt/sources.list || true
-          # Add ports.ubuntu.com as the armhf source
-          cat <<'EOF' | sudo tee /etc/apt/sources.list.d/armhf-ports.list
-          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy main universe
-          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
-          deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
-          EOF
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-linux-gnueabihf \
-            binutils-arm-linux-gnueabihf \
-            libc6-dev:armhf \
-            libcrypt-dev:armhf \
-            libncurses-dev bc bison flex libssl-dev \
-            u-boot-tools squashfs-tools make gcc git wget
+            gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf busybox-static
 
-      # ── Caches ───────────────────────────────────────────────────────────────
-      # Each source tree / build is cached independently so a change in one
-      # (e.g. kernel config) doesn't invalidate the others.
-
-      - name: Cache Linux kernel source
-        uses: actions/cache@v4
+      # Only the MI headers, not the whole ~2GB SDK.
+      - name: Fetch MI headers from the SigmaStar SDK
+        uses: actions/checkout@v4
         with:
-          path: build/linux
-          key: linux-mstar_v6_5_rebase-${{ hashFiles('config/kernel.config', 'patches/**') }}
-          restore-keys: |
-            linux-mstar_v6_5_rebase-
+          repository: wireless-tag-com/openwrt-ssd20x
+          path: sdk
+          sparse-checkout: |
+            18.06/package/sigmastar/sstar-mpp/files/glibc/include
+          sparse-checkout-cone-mode: false
 
-      - name: Cache BusyBox source & build
-        uses: actions/cache@v4
-        with:
-          path: build/busybox
-          key: busybox-1.36.1-${{ hashFiles('config/busybox.config') }}
-          restore-keys: |
-            busybox-1.36.1-
-
-      - name: Cache Dropbear source & build
-        uses: actions/cache@v4
-        with:
-          path: build/dropbear
-          key: dropbear-2022.83-v3
-
-      - name: Cache zlib source & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            build/zlib
-            build/sysroot
-          key: zlib-1.3.1-v1
-
-      - name: Cache OpenSSH sftp-server build
-        uses: actions/cache@v4
-        with:
-          path: build/openssh
-          key: openssh-9.9p1-v1
-
-      # ── Build ─────────────────────────────────────────────────────────────────
-      - name: Build firmware
-        run: bash build.sh
-
-      # ── Artifacts ─────────────────────────────────────────────────────────────
-      # Flash images and kernel – ready to TFTP-flash via U-Boot
-      # ── Rolling GitHub Release ────────────────────────────────────────────────
-      # Publishes (or overwrites) the "firmware-latest" release so fw-update
-      # can wget the images directly from the device.
-      - name: Publish firmware-latest release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: firmware-latest
-          name: "Latest Firmware"
-          body: "Commit: ${{ github.sha }}"
-          prerelease: true
-          files: |
-            output/uImage-chenxing
-            output/user-x.squashfs.img
-
-      - name: Write and publish version file
+      - name: Shell syntax
         run: |
-          echo "$(echo ${{ github.sha }} | cut -c1-7) on $(date -u '+%Y-%m-%d %H:%M UTC')" > output/version
+          fail=0
+          for s in *.sh; do
+            printf '%-20s ' "$s"
+            if bash -n "$s"; then echo OK; else echo FAIL; fail=1; fi
+          done
+          exit $fail
 
-      - name: Add version file to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: firmware-latest
-          files: output/version
+      # bash -n treats a heredoc as data, so the init script and the ten helper
+      # scripts it writes are never checked by the step above -- yet they are
+      # the ones that can only fail on the board, where there is no shell to
+      # debug them from. Extract and check them as BusyBox ash would see them.
+      - name: Generated on-target scripts
+        run: |
+          awk '/^cat > \$INITRAMFS_DIR\/init << .EOF.$/{f=1;next} f && /^EOF$/{exit} f' \
+            build-sdk.sh > init.sh
+          test -s init.sh || { echo "could not extract the init heredoc"; exit 1; }
+          awk "/<< 'INNER'\$/{n++;out=\"inner-\" n \".sh\";f=1;next} \
+               f&&/^INNER\$/{f=0;next} f{print > out}" init.sh
+          fail=0
+          for s in init.sh inner-*.sh; do
+            printf '%-16s ' "$s"
+            if dash -n "$s" && busybox sh -n "$s"; then echo OK; else echo FAIL; fail=1; fi
+          done
+          exit $fail
 
-      # USB rootfs directory – tar it first so permissions/symlinks are preserved
-      - name: Package USB rootfs
-        run: tar -czf output/usb-rootfs.tar.gz -C output usb-rootfs
+      - name: Cross-compile
+        run: |
+          INC=sdk/18.06/package/sigmastar/sstar-mpp/files/glibc/include
+          test -f "$INC/mi_sys.h" || { echo "MI headers not found in $INC"; exit 1; }
+          mkdir -p obj
+          fail=0
+          for f in src/*.c; do
+            printf '%-24s ' "$f"
+            if arm-linux-gnueabihf-gcc -Wall -O2 -c -I"$INC" \
+                 -o "obj/$(basename "${f%.c}").o" "$f"; then
+              echo OK
+            else
+              echo FAIL; fail=1
+            fi
+          done
+          exit $fail
 
-      - name: Upload USB rootfs
-        uses: actions/upload-artifact@v4
-        with:
-          name: nvr-usb-rootfs-${{ github.sha }}
-          path: output/usb-rootfs.tar.gz
-          if-no-files-found: error
-          retention-days: 30
+      - name: Report
+        run: |
+          ls -l obj/
+          arm-linux-gnueabihf-readelf -h obj/mi-player.o | grep -E 'Machine|Class'
 
-      # ── Rolling 'latest' release ──────────────────────────────────────────────
-      # Keeps a single public 'latest' release whose assets are always the most
-      # recent successful build. The board's fw-update script downloads from here.
-      - name: Publish latest release
+  firmware:
+    name: Full image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+
+      # The secrets context cannot be used in a job-level 'if', so gate the
+      # steps instead. Forked pull requests never receive secrets, so this also
+      # makes them skip cleanly rather than fail.
+      - name: Is a vendor deploy key configured?
+        id: gate
         env:
-          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ secrets.VENDOR_DEPLOY_KEY }}
         run: |
-          NOTES="Built from [\`${GITHUB_SHA:0:7}\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$GITHUB_SHA) on $(date -u '+%Y-%m-%d %H:%M UTC')"
-          TITLE="Latest build — $(date -u '+%Y-%m-%d %H:%M UTC')"
-          if gh release view firmware-latest &>/dev/null; then
-            gh release edit firmware-latest --title "$TITLE" --notes "$NOTES"
-            gh release upload firmware-latest \
-              output/uImage-chenxing \
-              output/user-x.squashfs.img \
-              --clobber
+          if [ -n "$KEY" ]; then
+            echo "have=yes" >> "$GITHUB_OUTPUT"
           else
-            gh release create firmware-latest \
-              --title "$TITLE" \
-              --notes "$NOTES" \
-              --prerelease \
-              output/uImage-chenxing \
-              output/user-x.squashfs.img
+            echo "have=no" >> "$GITHUB_OUTPUT"
+            echo "VENDOR_DEPLOY_KEY not set -- skipping the image build."
+            echo "Add a read-only deploy key for the private vendor repo to"
+            echo "enable it. The validate job above already covers everything"
+            echo "that does not need proprietary blobs."
           fi
+
+      - name: Install build dependencies
+        if: steps.gate.outputs.have == 'yes'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
+            build-essential bc bison flex libssl-dev u-boot-tools \
+            cpio xz-utils lzop squashfs-tools device-tree-compiler \
+            rsync wget openssl
+
+      - name: Authorise the private vendor repository
+        if: steps.gate.outputs.have == 'yes'
+        env:
+          KEY: ${{ secrets.VENDOR_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "${{ vars.VENDOR_REPO || 'git@github.com:ramkrishna757575/nvr-NBD80S10S-KL-vendor.git' }}" > .vendor-repo
+
+      - name: Fetch dependencies and vendor blobs
+        if: steps.gate.outputs.have == 'yes'
+        run: ./fetch-deps.sh
+
+      # build-sdk.sh only stages dropbear if it has already been built, so
+      # without this the image would quietly come out with no SSH at all.
+      # apfpv and wfb-ng are left out: they are slow to build and their absence
+      # only makes the reported image size a lower bound.
+      - name: Build dropbear
+        if: steps.gate.outputs.have == 'yes'
+        run: ./build-dropbear.sh
+
+      - name: Build the image
+        if: steps.gate.outputs.have == 'yes'
+        run: ./build-sdk.sh
+
+      # Report only. Uploading this would republish the proprietary modules
+      # baked into the initramfs.
+      - name: Report
+        if: steps.gate.outputs.have == 'yes'
+        run: |
+          ls -l output/uImage-sdk
+          md5sum output/uImage-sdk
+          test -x build/dropbear-out/bin/dropbearmulti && echo "dropbear: staged"
+          echo "Image built. Not uploaded: it contains proprietary vendor code."
