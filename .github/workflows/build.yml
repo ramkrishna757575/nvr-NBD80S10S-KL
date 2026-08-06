@@ -95,10 +95,14 @@ jobs:
           INC=sdk/18.06/package/sigmastar/sstar-mpp/files/glibc/include
           test -f "$INC/mi_sys.h" || { echo "MI headers not found in $INC"; exit 1; }
           mkdir -p obj
+          # verify-sig.c includes both of these; build-sdk.sh generates the
+          # second one from the committed public key.
+          python3 -c "import sys; print(','.join('0x%02x' % b for b in open(sys.argv[1],'rb').read()))" \
+            signing-key.pub > obj/signing-pubkey.h
           fail=0
           for f in src/*.c; do
             printf '%-24s ' "$f"
-            if arm-linux-gnueabihf-gcc -Wall -O2 -c -I"$INC" \
+            if arm-linux-gnueabihf-gcc -Wall -O2 -c -I"$INC" -Isrc/tweetnacl -Iobj \
                  -o "obj/$(basename "${f%.c}").o" "$f"; then
               echo OK
             else
