@@ -353,21 +353,27 @@ if [ -x $DROPBEAR_OUT/bin/dropbearmulti ]; then
     ln -sf /sbin/dropbearmulti $INITRAMFS_DIR/usr/bin/scp
     ln -sf /usr/bin/dbclient   $INITRAMFS_DIR/usr/bin/ssh
 
-    # Host keys are generated once at build time rather than on the target: the
-    # rootfs is a RAM initramfs, so on-target keys would change every reboot and
-    # every connection would trip the changed-host-key warning.
-    cp $DROPBEAR_OUT/etc/dropbear/dropbear_*_host_key $INITRAMFS_DIR/etc/dropbear/ 2>/dev/null
-    chmod 600 $INITRAMFS_DIR/etc/dropbear/* 2>/dev/null || true
+    # No host keys are baked in. They are generated on the board's first boot and
+    # kept in the flash 'keys' partition, so the image carries no private key and
+    # every board gets its own identity -- a baked key is shared by every board
+    # flashed from that image, and leaks the moment the image does. Set
+    # BAKE_HOST_KEYS=1 for a private build on a board with no keys partition.
+    if [ "${BAKE_HOST_KEYS:-0}" = "1" ]; then
+        cp $DROPBEAR_OUT/etc/dropbear/dropbear_*_host_key $INITRAMFS_DIR/etc/dropbear/ 2>/dev/null
+        chmod 600 $INITRAMFS_DIR/etc/dropbear/* 2>/dev/null || true
+        echo "ssh: host keys BAKED INTO THE IMAGE -- do not publish it"
+    fi
 
-    # Public key auth. Point SSH_PUBKEY at a different key to override.
-    SSH_PUBKEY=${SSH_PUBKEY:-$(ls "$HOME"/.ssh/id_*.pub 2>/dev/null | head -1)}
-    if [ -n "$SSH_PUBKEY" ] && [ -f "$SSH_PUBKEY" ]; then
+    # Public key auth, opt-in. Globbing ~/.ssh/id_*.pub by default silently put
+    # the builder's own key into every image, which makes a generic build
+    # personal without saying so.
+    if [ -n "${SSH_PUBKEY:-}" ] && [ -f "$SSH_PUBKEY" ]; then
         cp "$SSH_PUBKEY" $INITRAMFS_DIR/root/.ssh/authorized_keys
         chmod 700 $INITRAMFS_DIR/root/.ssh
         chmod 600 $INITRAMFS_DIR/root/.ssh/authorized_keys
         echo "ssh: authorized_keys from $SSH_PUBKEY"
     else
-        echo "ssh: no public key found -- set SSH_PUBKEY=/path/to/key.pub" >&2
+        echo "ssh: password login only (set SSH_PUBKEY=/path/to/key.pub to add a key)"
     fi
 
     # Password login. Defaults to the OpenIPC-style well-known password so the
@@ -1216,12 +1222,71 @@ start_eth
 telnetd -l /bin/sh
 
 # SSH. Dropbear needs /dev/pts (mounted above) and a writable /var/run for its
-# pid file. -R would generate host keys on demand, but they are baked into the
-# image instead so the board's identity survives a reboot -- this is a RAM
-# rootfs, so anything generated at runtime is lost.
+# pid file.
+#
+# Host keys: this is a RAM initramfs, so anything generated at boot is lost and
+# the board's fingerprint would change on every reboot. Baking keys into the
+# image instead gives every board flashed from it the same identity. So keep
+# them in one erase block of flash: generated once on first boot, restored on
+# every boot after. Nothing secret ships in the image and each board is distinct.
+# Needs a partition named "keys" -- add to bootargs:
+#   mtdparts=NOR_FLASH:64k@0xff0000(keys)
+# That block sits in the stock 'mtd' partition at the top of the chip, well
+# clear of the image, so nothing we flash can tread on it.
+KEYSTORE_MAGIC=NVRKEYS1
+
+keys_mtd() { awk -F'[:"]' '/"keys"/{print $1}' /proc/mtd 2>/dev/null | head -1; }
+
+restore_host_keys() {
+    m=$(keys_mtd)
+    [ -n "$m" ] || return 1
+    dd if=/dev/$m bs=64k count=1 2>/dev/null > /tmp/keys.blob || return 1
+    # Everything past the terminator is erased flash (0xff); the range match
+    # stops there, so it never reaches base64.
+    sed -n "/^$KEYSTORE_MAGIC\$/,/^ENDKEYS\$/p" /tmp/keys.blob 2>/dev/null |
+        sed '1d;$d' | base64 -d > /tmp/keys.tar 2>/dev/null
+    [ -s /tmp/keys.tar ] || return 1
+    tar -xf /tmp/keys.tar -C /etc 2>/dev/null || return 1
+    rm -f /tmp/keys.blob /tmp/keys.tar
+    [ -f /etc/dropbear/dropbear_ed25519_host_key ]
+}
+
+save_host_keys() {
+    m=$(keys_mtd)
+    [ -n "$m" ] || return 1
+    tar -cf /tmp/keys.tar -C /etc dropbear 2>/dev/null || return 1
+    { echo "$KEYSTORE_MAGIC"; base64 /tmp/keys.tar; echo ENDKEYS; } > /tmp/keys.blob
+    flashcp /tmp/keys.blob /dev/$m >/dev/null 2>&1 || return 1
+    rm -f /tmp/keys.blob /tmp/keys.tar
+}
+
+setup_host_keys() {
+    mkdir -p /etc/dropbear
+    [ -f /etc/dropbear/dropbear_ed25519_host_key ] && return 0   # baked in
+    if restore_host_keys; then
+        echo "ssh: host keys restored from flash"
+        return 0
+    fi
+    # RSA is the slow one to generate on this SoC and no current client needs
+    # it, so only these two. Entropy this early in boot is thin -- the kernel
+    # logs uninitialized urandom reads -- but this runs once per board.
+    for t in ed25519 ecdsa; do
+        dropbearkey -t $t -f /etc/dropbear/dropbear_${t}_host_key >/dev/null 2>&1
+    done
+    chmod 600 /etc/dropbear/* 2>/dev/null
+    if save_host_keys; then
+        echo "ssh: generated host keys and saved them to flash"
+    else
+        echo "ssh: generated TEMPORARY host keys -- no 'keys' partition, so the"
+        echo "     fingerprint will change on every reboot. Add to bootargs:"
+        echo "     mtdparts=NOR_FLASH:64k@0xff0000(keys)"
+    fi
+}
+
 start_dropbear() {
     [ -x /sbin/dropbear ] || return 1
     mkdir -p /var/run
+    setup_host_keys
     # Refuse password logins unless the image was built with a root password
     # hash, otherwise the account is locked ('*') and dropbear would just be
     # answering connections it can never authenticate.
@@ -1755,7 +1820,7 @@ printf '  sf read 0x21000000 0x%x 0x%x\n' "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  bootm 0x21000000"
 echo ""
 printf 'Then make it permanent:\n'
-printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
+printf "  setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:64k@0xff0000(keys) ethaddr=\${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'\n"
 printf "  setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x%x 0x%x;bootm 0x21000000'\n" \
     "$FLASH_OFFSET" "$ERASE_LEN"
 echo "  setenv bootdelay 3"
@@ -1770,3 +1835,8 @@ echo "eth0 uses DHCP and registers the hostname 'nvr-gs', so look for that in yo
 echo "router's client list. With no DHCP server it falls back to 192.168.1.10."
 echo "Pass ipaddr=A.B.C.D to force a static address instead -- if you do, keep it"
 echo "outside the router's DHCP pool or the same address can be leased elsewhere."
+echo ""
+echo "mtdparts gives the board one erase block at the top of flash to keep its SSH"
+echo "host keys in. They are generated on first boot, so no private key ships in"
+echo "the image and every board has its own identity. Without it SSH still works,"
+echo "but the fingerprint changes on every reboot."

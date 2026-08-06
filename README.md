@@ -188,6 +188,31 @@ The MAC comes from U-Boot's `ethaddr`, which only reaches the kernel if bootargs
 are built *inside* `setargs` (U-Boot expands `${}` one level only). Without it
 the board uses the locally administered address cached in `.fallback-mac`.
 
+### SSH
+
+Log in as `root` with the password `12345678`, or build with
+`ROOT_PASSWORD='...'` to change it. `SSH_PUBKEY=/path/to/key.pub` adds a key for
+public-key auth; without it the build is password-only.
+
+No private key ships in the image. The rootfs is a RAM initramfs, so anything
+generated at boot would be lost, and a baked-in host key would be shared by every
+board flashed from the same image — and would leak the moment the image did. So
+the board generates its own host keys on first boot and stores them in one erase
+block at the top of flash, which `mtdparts` exposes:
+
+```
+mtdparts=NOR_FLASH:64k@0xff0000(keys)
+```
+
+That block sits inside the stock `mtd` partition at the very top of the chip,
+well clear of the image, so reflashing never touches it. Without the partition
+SSH still works, but the fingerprint changes on every reboot and clients will
+complain. The keys are `ed25519` and `ecdsa`; RSA is skipped because generating
+it on this SoC is slow and no current client needs it.
+
+`BAKE_HOST_KEYS=1` embeds the build-time keys instead, for a private build on a
+board with no keys partition.
+
 ## Air unit
 
 Tested against OpenIPC/majestic, which answers `DESCRIBE` with
