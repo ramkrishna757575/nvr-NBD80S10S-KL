@@ -1089,6 +1089,14 @@ cat > /usr/bin/fpv-start << 'INNER'
 if [ "$1" = "udp" ]; then
     [ -f /tmp/fpv.conf ] && . /tmp/fpv.conf
     URL="udp:$(cat /tmp/wfb.port 2>/dev/null || echo 5600)"
+    # There is no SDP on this path, so nothing announces the format: mi-player
+    # would assume H.264 at 1280x720 and decode nothing, which reaches HDMI as a
+    # green screen rather than an error. Take both from the config instead.
+    wfb_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
+    CODEC=$(wfb_get codec);      [ -n "$CODEC" ] || CODEC=h265
+    [ "$CODEC" = "h265" ] && FPV_OPTS="$FPV_OPTS -h265"
+    FPV_SRC=$(wfb_get video_size)
+    [ -n "$FPV_SRC" ] || FPV_SRC=1920x1080
 else
     [ -f /tmp/fpv.conf ] || exit 0
     . /tmp/fpv.conf
@@ -1448,6 +1456,12 @@ udp_port = 5600
 # both halves next to this file; copy drone.key to the air unit as /etc/drone.key
 # (or scp your existing gs.key over the top of this one).
 key = /mnt/cfg/wfb/gs.key
+
+# What the air unit sends. Nothing announces this over wfb -- there is no SDP --
+# so it has to be stated here. OpenIPC's defaults are h265 at 1920x1080; the
+# decoder cannot scale up, so video_size must be the stream's own size.
+codec = h265
+video_size = 1920x1080
 
 # --- apfpv mode only ---
 ssid = OpenIPC
