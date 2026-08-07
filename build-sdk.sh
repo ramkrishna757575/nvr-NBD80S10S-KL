@@ -891,7 +891,30 @@ echo "wfb: $IFACE monitor, channel $CHANNEL, link_id $LINK_ID, port $RADIO_PORT"
 echo "$UDP_PORT" > /tmp/wfb.port
 # wfb_rx checks /dev/random and libsodium wants entropy, so this can pause on a
 # cold boot exactly as dropbearkey does.
-wfb_rx -K "$KEY" -c 127.0.0.1 -u "$UDP_PORT" -p "$RADIO_PORT" -i "$LINK_ID" $IFACE &
+#
+# Its stdout carries a link report every second, which awk reduces to the current
+# values for wfb-cli to read. Rewritten in place rather than appended: /tmp is
+# capped at 8m and a stats log would fill it inside a day.
+wfb_rx -K "$KEY" -c 127.0.0.1 -u "$UDP_PORT" -p "$RADIO_PORT" -i "$LINK_ID" $IFACE | awk -F'\t' '
+BEGIN { rssi="-"; snr="-"; freq="-"; mcs="-"; bw="-"; ants=0 }
+# One line per antenna. Report the strongest, which is what a pilot steers by.
+$2 == "RX_ANT" {
+    split($3, f, ":"); split($5, a, ":")
+    if (ants == 0 || a[3] > rssi) { rssi = a[3]; snr = a[6] }
+    freq = f[1]; mcs = f[2]; bw = f[3]
+    ants++
+}
+$2 == "PKT" {
+    split($3, p, ":")
+    printf "%s %s %s %s %s %s %d %s %s %s %d\n",
+        freq, mcs, bw, rssi, snr,
+        p[1], p[2] * 8 / 1000,
+        p[7], p[8], p[3], ants > "/tmp/wfb.status"
+    close("/tmp/wfb.status")
+    # Stale values would otherwise read as a live link after the signal drops.
+    rssi = "-"; snr = "-"; ants = 0
+}
+' &
 echo $! > /tmp/wfb.pid
 sleep 2
 
@@ -911,6 +934,51 @@ rm -f /tmp/wfb.pid
 fpv-stop
 INNER
 chmod +x /usr/bin/wfb-stop
+
+cat > /usr/bin/wfb-cli << 'INNER'
+#!/bin/sh
+# Link status, refreshed once a second. -1 prints once and exits.
+#
+# wfb-ng's own wfb-cli is a Python/twisted ncurses client talking to the
+# aggregator service, none of which exists here. It is not needed: wfb_rx prints
+# a report on stdout every second, and wfb-start reduces that to the current
+# values in /tmp/wfb.status. That file is the only way to reach them -- wfb_rx
+# starts at boot and owns the radio, so nothing later can read its stdout. It is
+# a single line, rewritten in place, not a growing log.
+STATUS=/tmp/wfb.status
+ONCE=0
+[ "$1" = "-1" ] && ONCE=1
+
+show() {
+    if [ ! -f $STATUS ]; then
+        echo "wfb-cli: no stats yet -- is wfb-start running? (mode = wfb)"
+        return 1
+    fi
+    if [ -n "$(find $STATUS -mmin +1 2>/dev/null)" ]; then
+        echo "wfb-cli: stats are stale, wfb_rx may have exited"
+        return 1
+    fi
+    # Fixed field order from wfb-start's parser; positional to avoid eval.
+    set -- $(cat $STATUS)
+    [ $# -ge 11 ] || { echo "wfb-cli: short status line"; return 1; }
+    if [ "$6" = "0" ]; then
+        echo "no signal          (0 pkt/s, ${11} antennas reporting)"
+    else
+        echo "rssi ${4}dBm  snr ${5}dB   ${6} pkt/s  ${7} kbit/s   fec ${8} lost ${9} decerr ${10}   ${1}MHz mcs${2} bw${3}"
+    fi
+}
+
+if [ $ONCE -eq 1 ]; then
+    show
+    exit $?
+fi
+echo "wfb-cli: ctrl-c to stop"
+while :; do
+    show
+    sleep 1
+done
+INNER
+chmod +x /usr/bin/wfb-cli
 
 # Adapted from OpenIPC sbc-groundstations package/wifibroadcast-ng/files/wfb-nics.
 # Theirs greps udevadm output, which we do not have, so the same detection is

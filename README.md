@@ -249,6 +249,21 @@ For wfb, `wfb-start` generates a key pair on first use if `key` is missing and
 writes both halves next to it; copy `drone.key` to the air unit as
 `/etc/drone.key`, or `scp` an existing `gs.key` over the top.
 
+`wfb-cli` shows the live link:
+
+```
+rssi -54dBm  snr 28dB   1240 pkt/s  624 kbit/s   fec 3 lost 0 decerr 0   5805MHz mcs3 bw20
+```
+
+`wfb-cli -1` prints once instead of refreshing. With several antennas it reports
+the strongest. `fec` is packets the forward error correction rebuilt — non-zero
+is normal and is the link working; `lost` is what it could not rebuild, and is
+what to watch when the picture breaks up.
+
+This is not wfb-ng's own `wfb-cli`, which is a Python/twisted ncurses client
+talking to the aggregator service. None of that exists here, and none of it is
+needed: `wfb_rx` prints the same numbers on stdout once a second.
+
 ### SSH
 
 Log in as `root` with the password `12345678`, or build with
@@ -382,6 +397,7 @@ src/wifi-monitor.c  monitor mode and sniffing, no external dependencies
 assets/test720.h264 720p Baseline 4:2:0 clip for decoding without a network
 config/             BusyBox and kernel configuration
 patches/            device tree and platform patches
+docs/               design notes not needed to build or flash
 ```
 
 Regenerate the test clip with:
