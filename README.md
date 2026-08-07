@@ -232,6 +232,7 @@ reboot
 | `mode` | `apfpv` — join the air unit's AP and pull RTSP. `wfb` — wfb-ng monitor mode with FEC |
 | `channel`, `link_id`, `radio_port`, `udp_port` | wfb mode; every one must match the air unit |
 | `key` | wfb key pair, generated on first use if absent |
+| `codec`, `video_size` | wfb mode; what the air unit transmits. Nothing announces it over wfb, so it has to be stated |
 | `ssid`, `psk` | apfpv mode |
 | `region` | regulatory domain, two-letter country code |
 | `telnet` | `1` enables the telnet console. Off by default — see below |
@@ -244,6 +245,64 @@ line needs no working filesystem.
 `apfpv` and `wfb` are mutually exclusive — one needs the adapter in managed
 mode, the other in monitor mode — so exactly one runs, and switching means a
 reboot.
+
+### Pairing with a wfb-ng air unit
+
+Tested against OpenIPC's `wifibroadcast-ng`, which despite the name is
+`svpcom/wfb-ng` built from a pinned commit — the same upstream this repository
+uses, so the two interoperate. The air unit's settings live in `/etc/wfb.yaml`.
+
+These must agree on both ends:
+
+| `/etc/wfb.yaml` (air) | `/mnt/cfg/wfb.conf` (ground) | OpenIPC default |
+| --- | --- | --- |
+| `wireless.channel` | `channel` | 165 (5825 MHz) |
+| `broadcast.link_id` | `link_id` | 7669206 |
+| — | `radio_port` | 0 |
+| `/etc/drone.key` | `key` | pair, see below |
+
+`radio_port` is not in `wfb.yaml` because their video transmitter does not pass
+`-p` and so takes the default, 0. Ports 144/16 carry telemetry and 160/32 the
+tunnel; neither is needed for video.
+
+FEC (`fec_k`, `fec_n`) and `mcs_index` are transmit-side only — the receiver
+learns them from the session header, so they do not need configuring here.
+
+**Copy the key before switching the air unit out of AP mode**, or you will have
+no route to it:
+
+```bash
+# ground station: make the pair without touching the radio
+mkdir -p /mnt/cfg/wfb && cd /mnt/cfg/wfb && wfb_keygen
+
+# from a PC, while the air unit is still an access point
+scp root@<board>:/mnt/cfg/wfb/drone.key .
+scp drone.key root@192.168.0.1:/etc/drone.key
+```
+
+`gs.key` stays on the ground station; they are halves of one pair and the link
+will not decrypt with a mismatch.
+
+Then set `mode = wfb` and reboot, or run `wfb-start` — it stops `wpa_supplicant`
+and the Wi-Fi DHCP client itself, so no reboot is needed to try it.
+
+### What the screen tells you
+
+The player only starts once packets are actually decrypting, so the display
+distinguishes the three states rather than showing an empty video plane:
+
+| Screen | Meaning |
+| --- | --- |
+| picture | video decoding |
+| `AIR UNIT HEARD, WRONG KEY` | frames arriving, none decrypt — key mismatch |
+| `WAITING FOR AIR UNIT` | nothing on this channel, or `link_id`/`radio_port` differ |
+
+The distinction is exact rather than a guess. `wfb_rx` filters on
+`(link_id << 8) | radio_port`, written into each frame's source MAC, using a
+capture filter — so a mismatch there is dropped before any counter moves and is
+indistinguishable from silence. Anything that gets past the filter and still
+fails is the key. And RSSI is recorded only for packets that decrypted, which is
+why a wrong key reports traffic with no signal strength at all.
 
 For wfb, `wfb-start` generates a key pair on first use if `key` is missing and
 writes both halves next to it; copy `drone.key` to the air unit as
@@ -263,6 +322,48 @@ what to watch when the picture breaks up.
 This is not wfb-ng's own `wfb-cli`, which is a Python/twisted ncurses client
 talking to the aggregator service. None of that exists here, and none of it is
 needed: `wfb_rx` prints the same numbers on stdout once a second.
+
+For the real thing, `wfb_rx -f` forwards raw packets to a PC running the full
+wfb-ng stack. That needs a PC attached, so it is a bench tool rather than how you
+would fly, but nothing is reimplemented.
+
+### No picture
+
+Three different faults produce a green screen, and they look identical:
+
+**The decoder is set up for the wrong format.** There is no SDP over wfb, so
+`codec` and `video_size` in `wfb.conf` are the only thing telling it what is
+arriving. Confirm with:
+
+```bash
+grep -A3 'CHN STATE' /proc/mi_modules/mi_vdec/mi_vdec0
+```
+
+`SendCnt` climbing while `decPicCnt` stays 0 and `initSeqCnt` spins means data is
+reaching the decoder but it cannot find a sequence header — the codec is wrong.
+`video_size` must be the stream's own size, not the display's: the decoder cannot
+scale up, and DIVP does the scaling afterwards.
+
+**An old player still holds the channel.** `killall mi-player` does not work —
+`fpv-start` runs a supervisor that restarts it a few seconds later with the
+previous arguments. Use `fpv-stop`, which kills the supervisor first. If you see
+`Chn(0) Already Create` or `Already Start`, a second player attached to the
+existing channel and its settings were silently ignored.
+
+**The OSD is covering it.** `fb-splash` draws on a layer above the video plane at
+constant alpha, so it hides the picture rather than compositing with it.
+`fpv-start` zeroes the framebuffer before starting the player; running `mi-player`
+by hand does not:
+
+```bash
+fpv-stop
+killall fb-splash mi-disp-init
+dd if=/dev/zero of=/dev/fb0 bs=64k     # alpha 0 is transparent
+mi-player -u 5600 -s 1920x1080 -h265
+```
+
+`MI_VDEC_SetChnParam FAILED (0xa0082008)` appears on both the RTSP and wfb paths
+and video works regardless; it is not the cause.
 
 ### SSH
 
@@ -355,7 +456,10 @@ openssl pkeyutl -sign -rawin -inkey ~/.config/nvr-signing/signing.key \
 
 `sysupgrade` looks for `<image>.sig` next to the image, at the same URL or path.
 
-## Air unit
+## Air unit in apfpv mode
+
+For wfb mode see [Pairing with a wfb-ng air unit](#pairing-with-a-wfb-ng-air-unit)
+above. This section is the RTSP path.
 
 Tested against OpenIPC/majestic, which answers `DESCRIBE` with
 `Server: OpenIPC.org RTSP Server/0.1` and Basic auth, streaming H.265 at
