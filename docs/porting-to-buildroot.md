@@ -9,42 +9,76 @@ original precondition is met. Read "What actually ports" below before starting:
 the part of OpenIPC's ground station that we would most want is the part that
 cannot come across.
 
-## The right upstream is sbc-groundstations, not firmware
+## There are two OpenIPC ground stations
 
-<https://github.com/OpenIPC/sbc-groundstations> — "A unified OpenIPC ground
-station image builder using Buildroot". A buildroot external tree (`board/`,
-`configs/`, `package/`, `external.desc`, `external.mk`) carrying the ground
-station stack: pixelpilot, alink, msposd, gsmenu, plus sysupgrade, squashfs and a
-U-Boot splash.
+They lead to opposite conclusions, and confusing them wasted an afternoon.
 
-`OpenIPC/firmware` is the *camera* tree. It is the right reference for how they
-structure a SoC target (see below) but it does not contain any ground station
-software.
+- <https://github.com/OpenIPC/sbc-groundstations> — "A unified OpenIPC ground
+  station image builder using Buildroot". Rockchip SBCs. Carries pixelpilot,
+  alink, msposd, gsmenu. Looks like the obvious upstream and mostly is not.
+- **The NVR one** — `hi3536dv100_fpv_defconfig` in `OpenIPC/sandbox-fpv` and
+  `OpenIPC/builder`, with packages in `OpenIPC/firmware`. A Cortex-A7 NVR SoC on
+  NOR flash with vendor blobs. This is the one that matches this board.
+
+`OpenIPC/firmware` is otherwise the camera tree, but it holds the packages the
+NVR target uses — `vdec-openipc`, `hisilicon-osdrv-*`, `wifibroadcast`,
+`datalink`.
+
+Also relevant: `OpenIPC/sandbox-fpv` carries notes specifically about running an
+NVR as a ground station — `nvr_gpio.md`, `rcjoystick.md`, `note_nvr_wdt.md`,
+`usb-eth-modem.md`.
 
 ## What actually ports
 
-Every board sbc-groundstations supports is Rockchip — RK3566 Radxa Zero3, RunCam
-Wifilink, Emax Wyvern-Link — with mainline DRM/KMS, `rkmpp` hardware decode and
-eMMC/SD storage.
+There are two different OpenIPC ground stations, and they lead to opposite
+conclusions. The distinction matters more than anything else in this document.
 
-| | sbc-groundstations | this board |
-| --- | --- | --- |
-| video | `pixelpilot`, rkmpp + DRM/KMS | `mi-player`, proprietary MI stack |
-| display | DRM/KMS | MI_DISP + MI_HDMI, no DRM |
-| storage | eMMC/SD, images 100s of MB | 11,456 KB of NOR |
+**The SBC one does not apply.** Every board `sbc-groundstations` supports is
+Rockchip — RK3566 Radxa Zero3, RunCam Wifilink, Emax Wyvern-Link — with mainline
+DRM/KMS, `rkmpp` hardware decode and eMMC. Its video player, `pixelpilot`, is
+meaningless without rkmpp and DRM, and its images assume storage two orders of
+magnitude larger than 11,456 KB of NOR.
 
-So:
+**The NVR one does apply, closely.** `hi3536dv100_fpv_defconfig` (in
+`OpenIPC/sandbox-fpv` and `OpenIPC/builder`) is a Cortex-A7 NVR SoC on NOR flash
+with vendor blobs, and it is nearly this board's shape:
 
-- **Ports cleanly:** `alink_gs`, `msposd`, `wfb_tun`, `wfb-ng` — ordinary C
-  against libsodium/libpcap, which this build already cross-compiles.
-- **Does not port:** the entire video path. `pixelpilot` is meaningless without
-  rkmpp and DRM. `mi-player` stays either way.
-- **Hard constraint:** their images assume eMMC. This partition has ~28 KB spare.
+```
+BR2_cortex_a7=y                              BR2_DEFAULT_KERNEL_VERSION="4.9.37"
+BR2_LINUX_KERNEL_UIMAGE=y                    LOADADDR="0x80008000"
+BR2_TARGET_ROOTFS_SQUASHFS=y (XZ)            # squashfs on NOR, not initramfs
+BR2_PACKAGE_HISILICON_OSDRV_HI3536DV100=y    # vendor blobs as a package
+BR2_PACKAGE_RTL8812AU_OPENIPC=y              # the same driver
+BR2_PACKAGE_WIFIBROADCAST=y  BR2_PACKAGE_DATALINK=y
+BR2_PACKAGE_MAVLINK_ROUTER=y BR2_PACKAGE_FFMPEG_OPENIPC=y
+BR2_GCC_VERSION_8_X=y                        # vs our pinned 7.3
+BR2_LINUX_KERNEL_EXT_HISI_PATCHER_LIST="...kernel/patches/ ...kernel/overlay"
+```
 
-The cheap version of this work is therefore to build the individual packages we
-want against the existing script, not to adopt buildroot. Adopting buildroot buys
-a package system and squashfs+overlay; it does not buy the ground station
-features, because those either port on their own or cannot port at all.
+Cortex-A7, a 4.9 kernel, a uImage with an explicit load address, squashfs on NOR,
+vendor blobs packaged, our Wi-Fi driver, wifibroadcast. Everything structural we
+would need, already solved for a comparable SoC.
+
+### The decoder is the one piece that does not exist
+
+`vdec-openipc` builds `vdec` from `OpenIPC/research` against HiSilicon's MPP:
+
+```make
+VDEC_OPENIPC_SITE = $(call github,openipc,silicon_research,$(VDEC_OPENIPC_VERSION))
+$(MAKE) CC=$(TARGET_CC) DRV=$(HISILICON_OSDRV_HI3536DV100_PKGDIR)/files/lib -C $(@D)/vdec
+```
+
+`OpenIPC/research` contains `vdec` (HiMPP, decode) and `star` (SigmaStar, but the
+*camera-side encoder* for Infinity6). **There is no SigmaStar decoder anywhere in
+their tree.** `src/mi-player.c` has no upstream counterpart and comes with us
+whatever we do — arguably it is this repository's one novel piece.
+
+### Reusable regardless of whether we port
+
+`OpenIPC/research/osd` is a framebuffer OSD built on `svpcom/wfb-ng-osd` and
+`fbg`, MIT, plain C, with elements for RSSI, RX packets, rate, battery, altitude,
+heading. It draws to a framebuffer, and `/dev/fb0` already works here. This does
+not need buildroot and would be useful tomorrow.
 
 ## Why this is worth considering
 
@@ -176,10 +210,107 @@ on hardware:
 - telnet is off by default
 - required artifacts are hard build errors, never silent skips
 
-## Lower-risk first step
+## The plan
 
-Switching the rootfs from initramfs to squashfs + overlay is the single biggest
-structural difference, is independently useful, and needs no buildroot. It would
-free the RAM the rootfs currently occupies and give a writable filesystem
-without the `/mnt/cfg` special case. Worth doing on its own terms, and it makes a
-later port smaller.
+Ordered so that each phase ends somewhere usable and the riskiest assumption is
+tested first. Do not start phase 2 until phase 1 answers its question.
+
+### Phase 0 — things worth having either way
+
+Neither depends on the port, and both survive it.
+
+- `OpenIPC/research/osd` on `/dev/fb0` for on-screen telemetry.
+- `alink_gs`: we already compute rssi/snr into `/tmp/wfb.status`; the scoring is
+  normalisation to 1000–2000. The real work is transmitting — see "Transmitting"
+  below.
+
+### Phase 1 — answer the toolchain question, alone
+
+Everything else rests on this and it is testable without committing to anything:
+
+**Does the SigmaStar 4.9.84 kernel build with a modern gcc?**
+
+We pin gcc 7.3 because a modern gcc could not build it. OpenIPC's NVR target uses
+buildroot's own gcc 8 and carries a kernel patch list to make old trees build. So
+either:
+
+- point buildroot at our Bootlin 7.3 toolchain as an external toolchain — works,
+  diverges from how they do it; or
+- patch the kernel for a newer gcc, as their `EXT_HISI_PATCHER` list does.
+
+Test it standalone: build the current kernel with gcc 8 and collect the errors.
+If the list is short, the port is straightforward. If it is not, use the external
+toolchain and move on — do not let this become the project.
+
+### Phase 2 — make the vendor tree reproducible
+
+Before anything can be packaged, `build/sdk` has to stop being a dirty checkout.
+Diff against pristine upstream and turn every local edit into a patch file. The
+same trap has already cost time twice (`build/sdk`, `build/rtl8812au`).
+
+### Phase 3 — squashfs + overlay, still without buildroot
+
+The biggest structural change, and independently valuable: it frees the RAM the
+initramfs occupies and removes the `/mnt/cfg` special case. Doing it here means
+phase 4 is a packaging exercise rather than a redesign.
+
+### Phase 4 — the external tree
+
+Copy `hi3536dv100_fpv_defconfig` as the template and substitute:
+
+| theirs | ours |
+| --- | --- |
+| `hisilicon-osdrv-hi3536dv100` | a `sigmastar-mi-ssr621q` package wrapping `vendor/` |
+| `vdec-openipc` (HiMPP) | `mi-player` |
+| `wifibroadcast`, `datalink`, `rtl8812au`, `mavlink-router` | unchanged |
+| `board/hi3536dv100/` | `board/ssr621q/` — kernel config, patches, post-image |
+
+Keep the image starting at `0x50000`. Their flashing procedure erases all 16 MB
+including U-Boot; ours must not.
+
+### Phase 5 — the FPV package set
+
+Once the tree builds, `alink_gs`, `msposd`, `wfb_tun` and the rest are
+configuration rather than porting. This is the payoff, and it is worth noting
+that phase 0 already delivers the two most valuable ones without any of this.
+
+## Transmitting
+
+`alink_gs` and telemetry both require the board to transmit, which it never has.
+That is a real change in kind, not degree:
+
+- regulatory power limits apply, and the adaptive-link docs warn about damaging
+  adapters with aggressive `txpower`;
+- a bug affects the aircraft's behaviour, not just our display — `alink_drone`
+  falls back to its lowest-rate profile when it stops hearing the ground station,
+  so a half-working uplink is worse than none.
+
+Prove reception-only features first.
+
+## Replacing U-Boot
+
+Short answer: **possible in principle, not worth it, and the risk is asymmetric.**
+
+`OpenIPC/u-boot-sigmastar` exists and is U-Boot 2015.01 — the same base as the
+stock XiongMai one here (`U-Boot 2015.01 (Feb 15 2022)`). But it is described as
+"U-Boot for Infinity6xx SoCs" and its topics are ssc30kq, ssc335, ssc337,
+ssc338q, ssc377: all Infinity6 cameras. **No Infinity2M, no SSR621Q.** Adding it
+would mean porting DDR init and board configuration for this SoC, which is the
+least forgiving part of any bring-up.
+
+Against that, weigh what would be lost. Every recovery this project has needed so
+far has gone through the stock U-Boot's TFTP. Our images start at `0x50000`
+precisely so that `0x0`–`0x50000` — IPL, IPL_CUST, U-Boot, and its environment —
+is never touched. Overwrite that and a bad write is unrecoverable without a SPI
+programmer. Their tree also ships `ipl/`, so a real switch would replace the
+SigmaStar boot ROM stage as well.
+
+And the gain is small: the stock U-Boot already does `tftpboot`, `sf
+read/write/erase/lock`, `bootm` and `saveenv`, which is everything the build and
+recovery flows use. What OpenIPC's adds is a boot splash, a GPIO boot menu and
+nicer environment handling — pleasant, not necessary.
+
+If it is ever attempted: load the new U-Boot into RAM and chainload it from the
+running one first, so it can be tested without writing to flash, and have a
+CH341A programmer and a full backup of the first 320 KB on hand before writing
+anything below `0x50000`.
