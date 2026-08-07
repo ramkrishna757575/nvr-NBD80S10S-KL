@@ -19,6 +19,12 @@
  * about a second without a message. That is the correct end state for a link we
  * cannot measure, so a stale or signal-free status file makes this send nothing
  * rather than invent a score.
+ *
+ * Upstream's alink_gs is the specification for everything on the wire here, and
+ * is worth reading before changing any of it. It is stdlib-only Python and would
+ * have run unmodified given an interpreter and wfb-ng's JSON stats service on
+ * 127.0.0.1:8103; this exists because the 11.4MB system partition has room for
+ * neither, not because its behaviour needed improving.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,7 +40,13 @@
 #define DEFAULT_IP	"10.5.0.10"
 #define DEFAULT_PORT	9999
 #define DEFAULT_STATUS	"/tmp/wfb.status"
-#define DEFAULT_INTERVAL 100
+/* Four a second. Upstream sends one per wfb-ng stats update, which is also the
+   air unit's 1000ms fallback window -- close enough to the edge that a single
+   late message drops it to MCS 0. */
+#define DEFAULT_INTERVAL 250
+
+#define IDR_CODE_LEN	4
+#define IDR_MAX_MESSAGES 20
 
 /* alink_gs.conf defaults. The window ends well above the noise floor: by -85dBm
    this link is already losing packets, so there is nothing to be gained by
@@ -69,15 +81,25 @@ static int normalise(double v, double lo, double hi)
 	return SCORE_MIN + (int)(clamp01((v - lo) / (hi - lo)) * (SCORE_MAX - SCORE_MIN));
 }
 
-/* Milliseconds, masked to stay positive in a 32-bit signed long. The air unit
-   only ever subtracts this from its own clock to get a latency, and full epoch
-   milliseconds overflow the long it parses into on 32-bit ARM. */
-static long now_ms(void)
+/* Epoch SECONDS, matching upstream's int(time.time()). Not milliseconds: some
+   air-unit builds feed this straight into settimeofday(), so the wrong unit sets
+   the drone's clock to a plausible-looking wrong date rather than failing. */
+static long now_s(void)
 {
-	struct timespec ts;
+	return (long)time(NULL);
+}
 
-	clock_gettime(CLOCK_REALTIME, &ts);
-	return (long)(((uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000) & 0x7FFFFFFF);
+/* Four lowercase letters, as upstream generates. The air unit treats the code as
+   an opaque tag to dedupe repeats of one request, so it needs to be distinct,
+   not unpredictable. */
+static void new_idr(char *code, int *left)
+{
+	int i;
+
+	for (i = 0; i < IDR_CODE_LEN; i++)
+		code[i] = (char)('a' + rand() % 26);
+	code[IDR_CODE_LEN] = '\0';
+	*left = IDR_MAX_MESSAGES;
 }
 
 /*
@@ -88,7 +110,7 @@ static long now_ms(void)
  * heard but keyed differently -- nothing worth scoring.
  */
 static int read_status(const char *path, double *rssi, double *snr,
-		       int *fec, int *lost, int *ants)
+		       int *fec, int *lost, int *ants, struct timespec *mtime)
 {
 	char line[256];
 	char f_rssi[32], f_snr[32];
@@ -101,6 +123,7 @@ static int read_status(const char *path, double *rssi, double *snr,
 		return -1;
 	if (time(NULL) - st.st_mtime > STALE_SEC)
 		return -1;
+	*mtime = st.st_mtim;
 
 	fp = fopen(path, "r");
 	if (!fp)
@@ -134,6 +157,10 @@ int main(int argc, char **argv)
 	int port = DEFAULT_PORT;
 	int interval = DEFAULT_INTERVAL;
 	int once = 0;
+	char idr_code[IDR_CODE_LEN + 1] = "";
+	int idr_left = 0;
+	int had_link = 0;
+	struct timespec last_mtime = { 0, 0 };
 	struct sockaddr_in dst;
 	int sock;
 	int c;
@@ -171,33 +198,56 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	srand((unsigned)(time(NULL) ^ getpid()));
+
 	for (;;) {
 		double rssi, snr;
 		int fec = 0, lost = 0, ants = 0;
+		struct timespec mtime;
 
-		if (read_status(status, &rssi, &snr, &fec, &lost, &ants) == 0) {
+		if (read_status(status, &rssi, &snr, &fec, &lost, &ants, &mtime) == 0) {
 			char msg[192];
 			unsigned char buf[4 + sizeof(msg)];
 			int score_rssi = normalise(rssi, RSSI_MIN, RSSI_MAX);
 			int score_snr = normalise(snr, SNR_MIN, SNR_MAX);
 			int score = (int)(score_rssi * RSSI_WEIGHT + score_snr * SNR_WEIGHT);
+			int fresh = (mtime.tv_sec != last_mtime.tv_sec ||
+				     mtime.tv_nsec != last_mtime.tv_nsec);
 			int len;
+
+			last_mtime = mtime;
 
 			if (score < SCORE_MIN)
 				score = SCORE_MIN;
 			if (score > SCORE_MAX)
 				score = SCORE_MAX;
 
-			/* Field order is alink_drone's process_message():
+			/* A new code on every loss and one when video starts, both
+			   as upstream does -- but only once per reading. wfb_rx
+			   reports once a second and we send four times a second to
+			   stay clear of the air unit's 1000ms fallback, so deciding
+			   per send would mint four codes for one reported loss and
+			   demand four keyframes where upstream asks for one. */
+			if (fresh && (lost > 0 || !had_link))
+				new_idr(idr_code, &idr_left);
+			had_link = 1;
+
+			/* alink_drone's process_message() token order:
 			   time:rssi_score:snr_score:recovered:lost:rssi:snr:
-			   antennas:penalty:fec_change. The trailing IDR request
-			   is optional and we make none. Penalty and fec_change
-			   are 0: both drive air-side behaviour we have no way to
-			   verify from here yet. */
+			   antennas:penalty:fec_change[:idr_code]. penalty and
+			   fec_change stay 0, matching upstream's shipped
+			   allow_penalty=False and allow_fec_increase=False. */
 			len = snprintf(msg, sizeof(msg),
 				       "%ld:%d:%d:%d:%d:%d:%d:%d:%d:%d",
-				       now_ms(), score, score, fec, lost,
+				       now_s(), score, score, fec, lost,
 				       (int)rssi, (int)snr, ants, 0, 0);
+			if (len > 0 && (size_t)len < sizeof(msg) && idr_left > 0) {
+				int n = snprintf(msg + len, sizeof(msg) - (size_t)len,
+						 ":%s", idr_code);
+				if (n > 0)
+					len += n;
+				idr_left--;
+			}
 			if (len > 0 && (size_t)len < sizeof(msg)) {
 				/* 4-byte big-endian length prefix, then the
 				   text. The drone reads a datagram at a time,
@@ -214,8 +264,11 @@ int main(int argc, char **argv)
 				else if (verbose)
 					printf("%s -> %s:%d\n", msg, ip, port);
 			}
-		} else if (verbose) {
-			printf("no link, sending nothing\n");
+		} else {
+			had_link = 0;
+			idr_left = 0;
+			if (verbose)
+				printf("no link, sending nothing\n");
 		}
 
 		if (once)
