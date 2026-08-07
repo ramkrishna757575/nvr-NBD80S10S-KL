@@ -918,10 +918,58 @@ $2 == "PKT" {
 echo $! > /tmp/wfb.pid
 sleep 2
 
-# The player is already listening if vdec_test armed it; otherwise start one.
-if [ ! -f /tmp/fpv.pid ] || ! kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null; then
-    fpv-start udp
-fi
+# Start the player on a real event, as the apfpv path does with the DHCP lease.
+# The event here is wfb_rx decrypting packets. Starting it earlier clears the OSD
+# and leaves an empty video plane on screen, which looks like a green screen
+# rather than "nothing is arriving".
+#
+# rssi is the tell: wfb_rx records antenna stats only for packets that decrypted,
+# so a value means the link is genuinely carrying video, and a bare packet count
+# with no rssi means the key is wrong.
+wfb_state() {
+    set -- $(cat /tmp/wfb.status 2>/dev/null)
+    [ $# -ge 11 ] || { echo none; return; }
+    [ "$6" = "0" ] && { echo none; return; }
+    [ "$4" = "-" ] && { echo nokey; return; }
+    echo up
+}
+splash() {
+    [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] || return 0
+    killall fb-splash 2>/dev/null
+    fb-splash -p "OPENIPC GROUND STATION" "$1" "$2" >/dev/null 2>&1
+}
+(
+    last=start
+    down=0
+    while :; do
+        now=$(wfb_state)
+        if [ "$now" = "up" ]; then
+            down=0
+            if [ ! -f /tmp/fpv.pid ] || ! kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null; then
+                fpv-start udp
+            fi
+        else
+            # A second without decrypts is normal between keyframes; only give up
+            # after several, or the picture would be torn down and rebuilt
+            # constantly on a marginal link.
+            down=$((down + 1))
+            if [ $down -ge 5 ]; then
+                if [ -f /tmp/fpv.pid ]; then
+                    fpv-stop
+                elif [ "$now" != "$last" ]; then
+                    case "$now" in
+                        nokey) splash "AIR UNIT HEARD, WRONG KEY" \
+                                      "copy drone.key to the air unit" ;;
+                        *)     splash "WAITING FOR AIR UNIT" \
+                                      "channel $CHANNEL  link_id $LINK_ID" ;;
+                    esac
+                fi
+            fi
+        fi
+        [ $down -ge 5 ] && last=$now
+        sleep 2
+    done
+) &
 wait
 INNER
 chmod +x /usr/bin/wfb-start
