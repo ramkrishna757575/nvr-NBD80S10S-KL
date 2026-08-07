@@ -857,7 +857,7 @@ CONF=${1:-/etc/wfb.conf}
 IFACE=${IFACE:-wlan0}
 get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" $CONF 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
 
-CHANNEL=$(get channel);     [ -n "$CHANNEL" ]    || CHANNEL=161
+CHANNEL=$(get channel);     [ -n "$CHANNEL" ]    || CHANNEL=165
 LINK_ID=$(get link_id);     [ -n "$LINK_ID" ]    || LINK_ID=7669206
 RADIO_PORT=$(get radio_port); [ -n "$RADIO_PORT" ] || RADIO_PORT=0
 UDP_PORT=$(get udp_port);   [ -n "$UDP_PORT" ]   || UDP_PORT=5600
@@ -1436,7 +1436,10 @@ if mount_cfg; then
 mode = apfpv
 
 # --- wfb mode only. Every one of these must match the air unit. ---
-channel = 161
+# 165 (5825 MHz) and link_id 7669206 are what OpenIPC's wifibroadcast-ng ships
+# in /etc/wfb.yaml on the air unit. Its video transmitter passes no -p, so it
+# uses radio_port 0; ports 144/16 and 160/32 are telemetry and the tunnel.
+channel = 165
 link_id = 7669206
 radio_port = 0
 udp_port = 5600
