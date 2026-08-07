@@ -962,7 +962,13 @@ show() {
     set -- $(cat $STATUS)
     [ $# -ge 11 ] || { echo "wfb-cli: short status line"; return 1; }
     if [ "$6" = "0" ]; then
-        echo "no signal          (0 pkt/s, ${11} antennas reporting)"
+        # A wrong link_id or radio_port is dropped by wfb_rx's capture filter
+        # before it counts anything, so it is indistinguishable from silence.
+        echo "no signal            wrong channel, or link_id/radio_port mismatch"
+    elif [ "$4" = "-" ]; then
+        # Past that filter, so link_id and radio_port agree. wfb_rx only records
+        # rssi for packets it decrypted, so there is no signal strength to show.
+        echo "receiving ${6} pkt/s, none decrypt (decerr ${10}) -- wrong key"
     else
         echo "rssi ${4}dBm  snr ${5}dB   ${6} pkt/s  ${7} kbit/s   fec ${8} lost ${9} decerr ${10}   ${1}MHz mcs${2} bw${3}"
     fi
