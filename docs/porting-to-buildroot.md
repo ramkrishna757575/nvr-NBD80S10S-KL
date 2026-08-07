@@ -289,28 +289,53 @@ Prove reception-only features first.
 
 ## Replacing U-Boot
 
-Short answer: **possible in principle, not worth it, and the risk is asymmetric.**
+**Feasible.** `OpenIPC/u-boot-sigmastar` describes itself as "U-Boot for
+Infinity6xx SoCs" and tags only Infinity6 parts, but that is the description, not
+the tree. It is SigmaStar's vendor U-Boot 2015.01, covering every Infinity
+generation:
 
-`OpenIPC/u-boot-sigmastar` exists and is U-Boot 2015.01 — the same base as the
-stock XiongMai one here (`U-Boot 2015.01 (Feb 15 2022)`). But it is described as
-"U-Boot for Infinity6xx SoCs" and its topics are ssc30kq, ssc335, ssc337,
-ssc338q, ssc377: all Infinity6 cameras. **No Infinity2M, no SSR621Q.** Adding it
-would mean porting DDR init and board configuration for this SoC, which is the
-least forgiving part of any bring-up.
+```
+configs/infinity2m_defconfig            configs/infinity2m_emac1_defconfig
+configs/infinity2m_spinand_defconfig    configs/infinity2m_usb_defconfig
+```
 
-Against that, weigh what would be lost. Every recovery this project has needed so
-far has gone through the stock U-Boot's TFTP. Our images start at `0x50000`
-precisely so that `0x0`–`0x50000` — IPL, IPL_CUST, U-Boot, and its environment —
-is never touched. Overwrite that and a bad write is unrecoverable without a SPI
-programmer. Their tree also ships `ipl/`, so a real switch would replace the
-SigmaStar boot ROM stage as well.
+Same base version as the stock XiongMai build here (`U-Boot 2015.01 (Feb 15
+2022)`, `Version: I2gc99e607` — I2 for Infinity2).
 
-And the gain is small: the stock U-Boot already does `tftpboot`, `sf
-read/write/erase/lock`, `bootm` and `saveenv`, which is everything the build and
-recovery flows use. What OpenIPC's adds is a boot splash, a GPIO boot menu and
-nicer environment handling — pleasant, not necessary.
+**DDR init is not U-Boot's job on this SoC.** The IPL brings DRAM up before
+U-Boot runs, which the boot log shows plainly:
 
-If it is ever attempted: load the new U-Boot into RAM and chainload it from the
-running one first, so it can be tested without writing to flash, and have a
-CH341A programmer and a full backup of the first 320 KB on hand before writing
-anything below `0x50000`.
+```
+IPL g4b89453 / miupll_233MHz / SPI 54M / 256MB      <- DRAM up here
+IPL_CUST g4b89453
+U-Boot 2015.01 ... @announce_dram_init(),DRAM:      <- only announces it
+```
+
+So keeping IPL and IPL_CUST at `0x0`–`0x10000` and replacing only U-Boot at
+`0x10000`–`0x40000` avoids the hardest part of a bring-up entirely.
+
+What remains is ordinary board porting, against SigmaStar's reference board:
+
+- pin muxing — the stock `bootcmd` does `gpio output 25 1` before reading flash,
+  which is board-specific and undocumented
+- EMAC and PHY wiring, including which of emac0/emac1 is used
+- environment at `0x40000`, and the `sf lock 0` behaviour this flash needs
+- whether the stock IPL_CUST will load an image this tree produces unchanged —
+  their `ipl/` directory and `make_boot_spinor.sh` suggest they normally build
+  and flash IPL and U-Boot together
+
+**Evaluate before writing anything.** The binary can be tested without touching
+flash: `tftpboot` it into RAM and chainload with `go`. Compare it against the
+stock one first — extract `0x10000`–`0x40000` from a flash dump and diff sizes,
+strings and the entry point.
+
+**What it would buy** is worth being honest about: the stock U-Boot already does
+`tftpboot`, `sf read/write/erase/lock`, `bootm` and `saveenv`, which is every
+operation the build and recovery flows use. The gains are a boot splash, a GPIO
+boot menu, environment handling that can be changed in-image rather than through
+`saveenv`, and a bootloader we can actually rebuild. That last one matters most
+if the board is ever to be flashed by someone else.
+
+**Risk:** a bad write below `0x50000` costs the TFTP recovery every fix in this
+project has relied on, and needs a CH341A to undo. Do not attempt it without the
+programmer to hand and a verified backup of the first 320 KB.
