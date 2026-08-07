@@ -339,3 +339,58 @@ if the board is ever to be flashed by someone else.
 **Risk:** a bad write below `0x50000` costs the TFTP recovery every fix in this
 project has relied on, and needs a CH341A to undo. Do not attempt it without the
 programmer to hand and a verified backup of the first 320 KB.
+
+### It builds (tried it)
+
+`patches/0004-uboot-sigmastar-build-for-infinity2m.patch` takes the tree from 33
+errors to a clean build with our pinned gcc 7.3:
+
+```
+make infinity2m_defconfig
+# disable CONFIG_MS_SDMMC and CONFIG_SSTAR_DISP -- the infinity2m headers lack
+# their register definitions (16 and 8 errors respectively)
+make KCFLAGS=-DPRODUCT_SOC=ssr621q
+```
+
+The patch is four changes:
+
+- `drivers/mstar/gpio/infinity2m/mhal_gpio.{c,h}` \u2014 the shared `drvGPIO.c` moved
+  to the Infinity6 HAL API (status return, out-parameters) and infinity2m was
+  never updated. Adds `Pull_Up/Down/Off`, which infinity6 also stubs as
+  unsupported.
+- `include/configs/infinity2m.h` \u2014 include `<configs/sstar-common.h>`, which
+  OpenIPC added and wired into infinity6 only. This is where
+  `CONFIG_ENV_ROOTADDR` and the env offset of `0x40000` come from, and that
+  offset happens to match this board.
+- `common/autoboot.c` \u2014 two `mmc_get_dev` calls sat outside the
+  `CONFIG_MS_SDMMC` guard.
+
+Result: `u-boot.bin` 347,528 bytes, `u-boot.xz.img.bin` 128,440 bytes,
+`CONFIG_SYS_TEXT_BASE=0x23E00000`.
+
+### The two things that are still unknown
+
+**Does it run?** Testable for free, without writing flash: `tftpboot` it into RAM
+and `go`. Nothing has been tried on hardware.
+
+**Does it fit where the IPL_CUST looks?** The boot log shows IPL_CUST reading
+`offset:00010000`, `size:65536` \u2014 our compressed image is 128,440, roughly double.
+The U-Boot region is `0x10000`\u2013`0x40000` (192 KB), so it fits the *region*;
+whether IPL_CUST honours a size field in the image header or always reads a fixed
+64 KB decides this, and only writing flash answers it.
+
+Note also that `make_boot_spinor.sh` builds a `BOOT.bin` for their layout \u2014
+IPL_CUST at 64k, U-Boot at 128k \u2014 which is not this board's. And
+`ipl/infinity2m/{IPL,IPL_CUST,MXP_SF}.bin` are absent from the repository, more
+evidence that infinity2m is carried but not built. Keeping the stock IPL was the
+plan anyway; only `u-boot.xz.img.bin` would ever be written, to `0x10000`.
+
+### Still board-specific, even once it runs
+
+The defconfig targets SigmaStar's reference board, not the XiongMai
+NBD80S10S-KL:
+
+- the stock `bootcmd` does `gpio output 25 1` before reading flash \u2014 purpose
+  undocumented, and GPIO is exactly the subsystem the patch touches
+- EMAC/PHY wiring, and which of emac0/emac1 is used
+- `sf lock 0` behaviour this flash needs before erase and before `saveenv`

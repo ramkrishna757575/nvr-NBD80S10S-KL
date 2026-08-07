@@ -1,0 +1,215 @@
+diff --git a/common/autoboot.c b/common/autoboot.c
+index ca0d64b..b897a93 100644
+--- a/common/autoboot.c
++++ b/common/autoboot.c
+@@ -364,6 +364,7 @@ void autoboot_command(const char *s)
+ 		}
+ #endif
+ 
++#if defined(CONFIG_MS_SDMMC) || defined(CONFIG_MS_EMMC)
+ 		if (mmc_get_dev(0) && !run_command(SIZE_SCRIPT0, 0)) {
+ 			run_command(LOAD_SCRIPT0, 0);
+ 			run_command("source", 0);
+@@ -375,6 +376,7 @@ void autoboot_command(const char *s)
+ 			run_command("source", 0);
+ 			return;
+ 		}
++#endif
+ 
+ 		dcache_enable();
+ 		icache_enable();
+diff --git a/drivers/mstar/gpio/infinity2m/mhal_gpio.c b/drivers/mstar/gpio/infinity2m/mhal_gpio.c
+index 8cb5419..486aae1 100644
+--- a/drivers/mstar/gpio/infinity2m/mhal_gpio.c
++++ b/drivers/mstar/gpio/infinity2m/mhal_gpio.c
+@@ -88,103 +88,133 @@ int MHal_GPIO_PadVal_Set(MS_GPIO_NUM u32IndexGPIO, U32 u32PadMode)
+     return HalPadSetVal(u32IndexGPIO, u32PadMode);
+ }
+ 
+-void MHal_GPIO_Pad_Oen(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Pad_Oen(MS_GPIO_NUM u32IndexGPIO)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_oen) &= (~gpio_table[u32IndexGPIO].m_oen);
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
++        return 1;
+     }
+ }
+ 
+-void MHal_GPIO_Pad_Odn(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Pad_Odn(MS_GPIO_NUM u32IndexGPIO)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_oen) |= gpio_table[u32IndexGPIO].m_oen;
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
++        return 1;
+     }
+ }
+ 
+-int MHal_GPIO_Pad_Level(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Pad_Level(MS_GPIO_NUM u32IndexGPIO, U8 *u8PadLevel)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+-        return ((MHal_RIU_REG(gpio_table[u32IndexGPIO].r_in)&gpio_table[u32IndexGPIO].m_in)? 1 : 0);
++        *u8PadLevel = ((MHal_RIU_REG(gpio_table[u32IndexGPIO].r_in)&gpio_table[u32IndexGPIO].m_in)? 1 : 0);
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
+-        return 0;
++        return 1;
+     }
+ }
+ 
+-U8 MHal_GPIO_Pad_InOut(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Pad_InOut(MS_GPIO_NUM u32IndexGPIO, U8 *u8PadInOut)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+-        return ((MHal_RIU_REG(gpio_table[u32IndexGPIO].r_oen)&gpio_table[u32IndexGPIO].m_oen)? 1 : 0);
++        *u8PadInOut = ((MHal_RIU_REG(gpio_table[u32IndexGPIO].r_oen)&gpio_table[u32IndexGPIO].m_oen)? 1 : 0);
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
+-        return 0;
++        return 1;
+     }
+ }
+ 
+-void MHal_GPIO_Pull_High(MS_GPIO_NUM u32IndexGPIO)
++/* infinity6 reports these unsupported too; kept so the shared driver links. */
++U8 MHal_GPIO_Pull_Up(MS_GPIO_NUM u32IndexGPIO)
++{
++    return 1;
++}
++
++U8 MHal_GPIO_Pull_Down(MS_GPIO_NUM u32IndexGPIO)
++{
++    return 1;
++}
++
++U8 MHal_GPIO_Pull_Off(MS_GPIO_NUM u32IndexGPIO)
++{
++    return 1;
++}
++
++U8 MHal_GPIO_Pull_High(MS_GPIO_NUM u32IndexGPIO)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_out) |= gpio_table[u32IndexGPIO].m_out;
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
++        return 1;
+     }
+ }
+ 
+-void MHal_GPIO_Pull_Low(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Pull_Low(MS_GPIO_NUM u32IndexGPIO)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_out) &= (~gpio_table[u32IndexGPIO].m_out);
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
++        return 1;
+     }
+ }
+ 
+-void MHal_GPIO_Set_High(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Set_High(MS_GPIO_NUM u32IndexGPIO)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_oen) &= (~gpio_table[u32IndexGPIO].m_oen);
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_out) |= gpio_table[u32IndexGPIO].m_out;
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
++        return 1;
+     }
+ }
+ 
+-void MHal_GPIO_Set_Low(MS_GPIO_NUM u32IndexGPIO)
++U8 MHal_GPIO_Set_Low(MS_GPIO_NUM u32IndexGPIO)
+ {
+     if (u32IndexGPIO >= 0 && u32IndexGPIO < END_GPIO_NUM)
+     {
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_oen) &= (~gpio_table[u32IndexGPIO].m_oen);
+         MHal_RIU_REG(gpio_table[u32IndexGPIO].r_out) &= (~gpio_table[u32IndexGPIO].m_out);
++        return 0;
+     }
+     else
+     {
+         MS_ASSERT(0);
++        return 1;
+     }
+ }
+ 
+diff --git a/drivers/mstar/gpio/infinity2m/mhal_gpio.h b/drivers/mstar/gpio/infinity2m/mhal_gpio.h
+index fc16b09..c94b023 100644
+--- a/drivers/mstar/gpio/infinity2m/mhal_gpio.h
++++ b/drivers/mstar/gpio/infinity2m/mhal_gpio.h
+@@ -53,18 +53,21 @@ extern "C" {
+ void MHal_GPIO_Pad_Set(MS_GPIO_NUM u32IndexGPIO);
+ int  MHal_GPIO_PadGroupMode_Set(U32 u32PadMode);
+ int  MHal_GPIO_PadVal_Set(MS_GPIO_NUM u32IndexGPIO, U32 u32PadMode);
+-void MHal_GPIO_Set_High(MS_GPIO_NUM u32IndexGPIO);
+-void MHal_GPIO_Set_Low(MS_GPIO_NUM u32IndexGPIO);
++U8   MHal_GPIO_Set_High(MS_GPIO_NUM u32IndexGPIO);
++U8   MHal_GPIO_Set_Low(MS_GPIO_NUM u32IndexGPIO);
+ void MHal_GPIO_Set_Input(MS_GPIO_NUM u32IndexGPIO);
+ void MHal_GPIO_Set_Output(MS_GPIO_NUM u32IndexGPIO);
+ int MHal_GPIO_Get_InOut(MS_GPIO_NUM u32IndexGPIO);
+-int MHal_GPIO_Pad_Level(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pad_Level(MS_GPIO_NUM u32IndexGPIO, U8 *u8PadLevel);
+ 
+-void MHal_GPIO_Pad_Oen(MS_GPIO_NUM u32IndexGPIO);
+-void MHal_GPIO_Pad_Odn(MS_GPIO_NUM u32IndexGPIO);
+-U8 MHal_GPIO_Pad_InOut(MS_GPIO_NUM u32IndexGPIO);
+-void MHal_GPIO_Pull_Low(MS_GPIO_NUM u32IndexGPIO);
+-void MHal_GPIO_Pull_High(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pad_Oen(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pad_Odn(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pad_InOut(MS_GPIO_NUM u32IndexGPIO, U8 *u8PadInOut);
++U8 MHal_GPIO_Pull_Low(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pull_High(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pull_Up(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pull_Down(MS_GPIO_NUM u32IndexGPIO);
++U8 MHal_GPIO_Pull_Off(MS_GPIO_NUM u32IndexGPIO);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/include/configs/infinity2m.h b/include/configs/infinity2m.h
+index 399fdf9..18cca5f 100644
+--- a/include/configs/infinity2m.h
++++ b/include/configs/infinity2m.h
+@@ -418,5 +418,5 @@
+ 
+ /* SENSOR */
+ #define CONFIG_MS_SRCFG
+-
++#include <configs/sstar-common.h>
+ #endif	/* __CONFIG_H */
