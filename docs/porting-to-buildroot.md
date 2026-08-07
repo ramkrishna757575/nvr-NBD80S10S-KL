@@ -370,8 +370,22 @@ Result: `u-boot.bin` 347,528 bytes, `u-boot.xz.img.bin` 128,440 bytes,
 
 ### The two things that are still unknown
 
-**Does it run?** Testable for free, without writing flash: `tftpboot` it into RAM
-and `go`. Nothing has been tried on hardware.
+**Does it run? Chainloading cannot answer this — tried, twice.**
+
+- `tftpboot 0x21000000 u-boot.bin` then `go 0x21000000` → prints "Starting
+  application", emits one garbage byte and the board resets. The tree is not
+  position-independent, so it cannot run away from its link address.
+- `cp.b 0x21000000 0x23E00000 0x54d88` → hangs, exactly as `tftpboot` straight to
+  `0x23E00000` did.
+
+Both failures at `0x23E00000` say the same thing: the **running** stock U-Boot
+occupies that address. It is built from the same vendor tree, so it shares
+`CONFIG_SYS_TEXT_BASE=0x23E00000`, and it evidently executes in place rather than
+relocating to high RAM. Writing there destroys the code that is executing.
+
+So the build cannot run anywhere else, and the one place it can run is taken.
+Both attempts were RAM-only and the board recovered on a power cycle, but there
+is nothing further to learn without writing flash.
 
 **Does it fit where the IPL_CUST looks?** The boot log shows IPL_CUST reading
 `offset:00010000`, `size:65536` \u2014 our compressed image is 128,440, roughly double.
