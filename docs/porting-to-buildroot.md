@@ -4,9 +4,47 @@ Notes for a possible move from `build-sdk.sh` to OpenIPC's buildroot external
 tree. Nothing here has been attempted — this is the research, written down so it
 does not have to be repeated.
 
-**Status: not started. Do not begin until video works end to end** (apfpv and
-wfb-ng both verified against a real air unit). Porting a build system while the
-product is unproven means debugging two unknowns at once.
+**Status: not started.** Video now works end to end (wfb-ng, H.265, HDMI), so the
+original precondition is met. Read "What actually ports" below before starting:
+the part of OpenIPC's ground station that we would most want is the part that
+cannot come across.
+
+## The right upstream is sbc-groundstations, not firmware
+
+<https://github.com/OpenIPC/sbc-groundstations> — "A unified OpenIPC ground
+station image builder using Buildroot". A buildroot external tree (`board/`,
+`configs/`, `package/`, `external.desc`, `external.mk`) carrying the ground
+station stack: pixelpilot, alink, msposd, gsmenu, plus sysupgrade, squashfs and a
+U-Boot splash.
+
+`OpenIPC/firmware` is the *camera* tree. It is the right reference for how they
+structure a SoC target (see below) but it does not contain any ground station
+software.
+
+## What actually ports
+
+Every board sbc-groundstations supports is Rockchip — RK3566 Radxa Zero3, RunCam
+Wifilink, Emax Wyvern-Link — with mainline DRM/KMS, `rkmpp` hardware decode and
+eMMC/SD storage.
+
+| | sbc-groundstations | this board |
+| --- | --- | --- |
+| video | `pixelpilot`, rkmpp + DRM/KMS | `mi-player`, proprietary MI stack |
+| display | DRM/KMS | MI_DISP + MI_HDMI, no DRM |
+| storage | eMMC/SD, images 100s of MB | 11,456 KB of NOR |
+
+So:
+
+- **Ports cleanly:** `alink_gs`, `msposd`, `wfb_tun`, `wfb-ng` — ordinary C
+  against libsodium/libpcap, which this build already cross-compiles.
+- **Does not port:** the entire video path. `pixelpilot` is meaningless without
+  rkmpp and DRM. `mi-player` stays either way.
+- **Hard constraint:** their images assume eMMC. This partition has ~28 KB spare.
+
+The cheap version of this work is therefore to build the individual packages we
+want against the existing script, not to adopt buildroot. Adopting buildroot buys
+a package system and squashfs+overlay; it does not buy the ground station
+features, because those either port on their own or cannot port at all.
 
 ## Why this is worth considering
 
@@ -25,8 +63,12 @@ overlay, and the OpenIPC package set (`ipctool`, `yaml-cli`, `vtund`, web UI).
 ## There is precedent: OpenIPC already ships an NVR groundstation
 
 <https://github.com/OpenIPC/wiki/blob/master/en/fpv-nvr.md> — for **HiSilicon
-Hi3536DV100**, built in their normal tree as
+Hi3536DV100**, built in the camera tree as
 `br-ext-chip-hisilicon/configs/hi3536dv100_lite_defconfig`.
+
+This is the closest precedent for a NOR-flash NVR SoC as a ground station, which
+is why the camera tree is still worth reading even though the ground station
+software lives elsewhere.
 
 The page is not linked from the wiki table of contents; it is found only by
 direct URL.
