@@ -518,6 +518,16 @@ ${CROSS_COMPILE}gcc -O2 -o $INITRAMFS_DIR/bin/fb-splash \
     $SCRIPT_DIR/src/fb-splash.c \
     || echo "warning: fb-splash failed to build" >&2
 
+# ── adaptive link, ground side ────────────────────────────────────────────────
+# Scores the downlink from /tmp/wfb.status and tells the air unit, which picks an
+# MCS to match. Fatal rather than warned: alink_drone drops to MCS 0 when it
+# stops hearing us, so an image missing this is worse on air than one that never
+# had it -- the drone would spend the whole flight at its slowest rate.
+echo "building alink-gs"
+mkdir -p $INITRAMFS_DIR/usr/bin
+${CROSS_COMPILE}gcc -O2 -o $INITRAMFS_DIR/usr/bin/alink-gs \
+    $SCRIPT_DIR/src/alink-gs.c
+
 # ── firmware signature verification ───────────────────────────────────────────
 # sysupgrade fetches over a connection busybox cannot authenticate: its wget
 # prints "TLS certificate validation not implemented" and means it. Signing makes
@@ -862,6 +872,9 @@ LINK_ID=$(get link_id);     [ -n "$LINK_ID" ]    || LINK_ID=7669206
 RADIO_PORT=$(get radio_port); [ -n "$RADIO_PORT" ] || RADIO_PORT=0
 UDP_PORT=$(get udp_port);   [ -n "$UDP_PORT" ]   || UDP_PORT=5600
 KEY=$(get key);             [ -n "$KEY" ]        || KEY=/mnt/cfg/wfb/gs.key
+ALINK=$(get alink);         [ -n "$ALINK" ]      || ALINK=0
+ALINK_IP=$(get alink_ip);   [ -n "$ALINK_IP" ]   || ALINK_IP=10.5.0.10
+ALINK_PORT=$(get alink_port); [ -n "$ALINK_PORT" ] || ALINK_PORT=9999
 
 [ -d /sys/class/net/$IFACE ] || load-wifi || exit 1
 
@@ -917,6 +930,15 @@ $2 == "PKT" {
 ' &
 echo $! > /tmp/wfb.pid
 sleep 2
+
+# Adaptive link reporting. Started after wfb_rx because it reads the status file
+# wfb_rx's output produces, and sends nothing until that file describes a link
+# actually carrying video.
+if [ "$ALINK" = "1" ] && [ -x /usr/bin/alink-gs ]; then
+    alink-gs -i "$ALINK_IP" -p "$ALINK_PORT" &
+    echo $! > /tmp/alink.pid
+    echo "wfb: adaptive link reporting to $ALINK_IP:$ALINK_PORT"
+fi
 
 # Start the player on a real event, as the apfpv path does with the DHCP lease.
 # The event here is wfb_rx decrypting packets. Starting it earlier clears the OSD
@@ -976,6 +998,9 @@ chmod +x /usr/bin/wfb-start
 
 cat > /usr/bin/wfb-stop << 'INNER'
 #!/bin/sh
+[ -f /tmp/alink.pid ] && kill "$(cat /tmp/alink.pid)" 2>/dev/null
+killall alink-gs 2>/dev/null
+rm -f /tmp/alink.pid
 [ -f /tmp/wfb.pid ] && kill "$(cat /tmp/wfb.pid)" 2>/dev/null
 killall wfb_rx 2>/dev/null
 rm -f /tmp/wfb.pid
@@ -1510,6 +1535,19 @@ key = /mnt/cfg/wfb/gs.key
 # decoder cannot scale up, so video_size must be the stream's own size.
 codec = h265
 video_size = 1920x1080
+
+# Adaptive link. Scores the downlink and reports it to the air unit, which raises
+# or lowers its MCS and bitrate to suit. Needs alink_drone running there, and an
+# uplink to carry the reports -- this board has never transmitted, so it is off
+# until that is proven. Turning it on without a working uplink is worse than
+# leaving it off: alink_drone drops to MCS 0 when the reports stop arriving.
+#
+# alink_ip/alink_port are where the reports go. 10.5.0.10:9999 is alink_drone's
+# default over the wfb tunnel; for the tunnel-free path, point these at the local
+# wfb_tx and have the air unit's wfb_rx deliver to 127.0.0.1:9999.
+alink = 0
+alink_ip = 10.5.0.10
+alink_port = 9999
 
 # --- apfpv mode only ---
 ssid = OpenIPC
