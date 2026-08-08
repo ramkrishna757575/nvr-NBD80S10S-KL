@@ -1,0 +1,9 @@
+config BR2_PACKAGE_GS_TOOLS
+	bool "gs-tools"
+	select BR2_PACKAGE_SIGMASTAR_MI
+	help
+	  The ground station's own programs: the video player, the display
+	  and framebuffer setup, the adaptive link controller, the wifi
+	  monitor-mode helper, and the firmware signature verifier.
+
+	  Built from src/ in this repository.

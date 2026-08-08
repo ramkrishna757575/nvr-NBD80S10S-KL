@@ -12,6 +12,8 @@ SIGMASTAR_MI_VERSION = xm-f947025
 SIGMASTAR_MI_SOURCE =
 SIGMASTAR_MI_LICENSE = PROPRIETARY
 SIGMASTAR_MI_REDISTRIBUTE = NO
+# gs-tools compiles against these headers and links these libraries.
+SIGMASTAR_MI_INSTALL_STAGING = YES
 
 SIGMASTAR_MI_TOP = $(BR2_EXTERNAL_SSR621Q_FPV_PATH)/..
 SIGMASTAR_MI_VENDOR = $(SIGMASTAR_MI_TOP)/vendor
@@ -80,6 +82,16 @@ define SIGMASTAR_MI_INSTALL_TARGET_CMDS
 	$(SIGMASTAR_MI_INSTALL_LIBS)
 	$(SIGMASTAR_MI_INSTALL_CONFIG)
 	$(SIGMASTAR_MI_INSTALL_UCLIBC)
+endef
+
+define SIGMASTAR_MI_INSTALL_STAGING_CMDS
+	$(INSTALL) -d $(STAGING_DIR)/usr/include
+	cp -a $(SIGMASTAR_MI_MPP)/glibc/include/. $(STAGING_DIR)/usr/include/
+	$(INSTALL) -d $(STAGING_DIR)/usr/lib
+	$(foreach l,$(SIGMASTAR_MI_LIBS), \
+		$(INSTALL) -m 0755 $(SIGMASTAR_MI_MPP)/glibc/mi_libs/dynamic/$(l).so \
+			$(STAGING_DIR)/usr/lib/$(l).so
+	)
 endef
 
 $(eval $(generic-package))

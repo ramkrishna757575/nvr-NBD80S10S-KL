@@ -54,6 +54,7 @@ BR2_TARGET_ROOTFS_INITRAMFS=y
 # ── Packages ─────────────────────────────────────────────────────────────────
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_SIGMASTAR_MI=y
+BR2_PACKAGE_GS_TOOLS=y
 # So a board running this image can write the stock firmware back to mtd2
 # itself, instead of the only way out being U-Boot over serial.
 BR2_PACKAGE_MTD=y
