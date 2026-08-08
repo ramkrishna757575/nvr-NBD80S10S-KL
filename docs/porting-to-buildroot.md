@@ -190,6 +190,35 @@ removes the blocker, it does not by itself justify changing the shipped build.
 `mach-sstar//Kconfig` double slash -- a path variable that is empty unless the
 build runs in the source tree. Anything that assumes `O=` needs this fixed first.
 
+*Diagnosed 2026-08-08, and it is a series of one-line fixes rather than a wall.*
+Buildroot builds the kernel with `O=`, so this has to be dealt with. The tree
+assumes its working directory is the source tree in at least six places:
+
+| where | what |
+| --- | --- |
+| `Makefile:224` | `SSTAR_CHIP_FILE := '.sstar_chip.txt'` |
+| `Makefile:1051` | `file := gitInformation.txt` |
+| `Makefile:1070` | `python scripts/ms_gen_mvxv_h.py` |
+| `Makefile:1076` | `python scripts/ms_gen_ceva_version_h.py` |
+| `arch/arm/boot/Makefile:22` | `MKIMAGE_BIN = scripts/mkimage` |
+| `arch/arm/boot/Makefile:87,95` | `python scripts/ms_builtin_dtb_update.py` |
+
+The chip file is the root of the confusing error: it feeds `SSTAR_CHIP_MODEL` ->
+the `SSTAR_CHIP_FOLDER` env symbol -> `SSTAR_CHIP_NAME`, which Kconfig expands in
+`source "arch/arm/mach-sstar/$SSTAR_CHIP_NAME/Kconfig"`. Read it by a relative
+path from an output directory and it comes back empty, so the source path
+collapses onto the directory itself and kconfig reports recursion, not a missing
+file.
+
+With those prefixed `$(srctree)/`, **the kernel compiles cleanly out of tree** --
+`exit 0`, `zImage is ready`, `Image` 3,887,104 bytes, zero errors.
+
+What still does not run out of tree is SigmaStar's post-processing: `MKIMAGE_BIN`
+and `SS_DTB_NAME` are both relative, so the BNDTB step and the uImage wrapper are
+silently skipped -- the build "succeeds" and produces no uImage. Note these two
+need *different* prefixes: the script lives in `$(srctree)`, the generated `.dtb`
+in `$(objtree)`. A blanket `$(srctree)/` would be wrong.
+
 **The kernel tree is not clean.** `build/sdk` is a dirty checkout with hand
 edits. Before packaging it, diff against pristine upstream and turn every local
 change into a patch file. The same trap already cost time twice: `build/sdk` and
