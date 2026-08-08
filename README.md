@@ -308,6 +308,13 @@ For wfb, `wfb-start` generates a key pair on first use if `key` is missing and
 writes both halves next to it; copy `drone.key` to the air unit as
 `/etc/drone.key`, or `scp` an existing `gs.key` over the top.
 
+Either half works on either end -- both sides derive the same shared secret from
+a `gs.key`/`drone.key` pair, which is why OpenIPC can ship one `drone.key` and
+have its ground station use a copy of it. What matters is that both ends use
+files from the *same* `wfb_keygen` run; halves from two different runs will not
+decrypt. `wfb-keyinfo` prints the public halves of a key file if you need to
+check two ends against each other.
+
 `wfb-cli` shows the live link:
 
 ```

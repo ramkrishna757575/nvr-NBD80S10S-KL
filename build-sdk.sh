@@ -528,6 +528,11 @@ mkdir -p $INITRAMFS_DIR/usr/bin
 ${CROSS_COMPILE}gcc -O2 -o $INITRAMFS_DIR/usr/bin/alink-gs \
     $SCRIPT_DIR/src/alink-gs.c
 
+echo "building wfb-keyinfo"
+${CROSS_COMPILE}gcc -O2 -o $INITRAMFS_DIR/usr/bin/wfb-keyinfo \
+    -I$SCRIPT_DIR/src/tweetnacl \
+    $SCRIPT_DIR/src/wfb-keyinfo.c $SCRIPT_DIR/src/tweetnacl/tweetnacl.c
+
 # ── firmware signature verification ───────────────────────────────────────────
 # sysupgrade fetches over a connection busybox cannot authenticate: its wget
 # prints "TLS certificate validation not implemented" and means it. Signing makes
@@ -1527,7 +1532,9 @@ udp_port = 5600
 
 # Key pair. wfb-start generates one on first use if it is missing and writes
 # both halves next to this file; copy drone.key to the air unit as /etc/drone.key
-# (or scp your existing gs.key over the top of this one).
+# (or scp your existing gs.key over the top of this one). Either half works on
+# either end -- both derive the same shared secret -- but the two ends must use
+# files from the same wfb_keygen run. wfb-keyinfo prints a key's public halves.
 key = /mnt/cfg/wfb/gs.key
 
 # What the air unit sends. Nothing announces this over wfb -- there is no SDP --

@@ -85,6 +85,9 @@ static int sniff(const char *ifname, int seconds)
 {
     unsigned char buf[4096];
     unsigned long packets = 0, bytes = 0;
+    unsigned long wfb_packets = 0;
+    unsigned int wfb_channels[8] = {0};
+    int wfb_channel_count = 0;
     struct sockaddr_ll sll;
     struct ifreq ifr;
     time_t deadline;
@@ -126,6 +129,7 @@ static int sniff(const char *ifname, int seconds)
 
     while (time(NULL) < deadline) {
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
+        unsigned rtap;
 
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
@@ -134,14 +138,35 @@ static int sniff(const char *ifname, int seconds)
             break;
         }
 
+        rtap = (n >= 4) ? (buf[2] | (buf[3] << 8)) : 0;
         if (packets == 0) {
             /* In monitor mode every frame is prefixed with a radiotap header;
                its length is a little-endian u16 at offset 2. Seeing a sane
                value here confirms we really are getting 802.11, not Ethernet. */
-            unsigned rtap = (n >= 4) ? (buf[2] | (buf[3] << 8)) : 0;
             printf("first frame: %zd bytes, radiotap header %u bytes%s\n",
                    n, rtap,
                    (rtap >= 8 && rtap < 128) ? "" : "  <-- not radiotap?");
+        }
+
+        /* WFB-NG stores its channel identifier in bytes 12..15 of the
+           802.11 header, after the W:B MAC marker at bytes 10..11. */
+        if (rtap >= 8 && rtap + 16 <= (unsigned)n &&
+            buf[rtap + 10] == 0x57 && buf[rtap + 11] == 0x42) {
+            unsigned int channel = ((unsigned int)buf[rtap + 12] << 24) |
+                                   ((unsigned int)buf[rtap + 13] << 16) |
+                                   ((unsigned int)buf[rtap + 14] << 8) |
+                                   buf[rtap + 15];
+            int index;
+
+            wfb_packets++;
+            for (index = 0; index < wfb_channel_count; index++)
+                if (wfb_channels[index] == channel)
+                    break;
+            if (index == wfb_channel_count && wfb_channel_count < 8) {
+                wfb_channels[wfb_channel_count++] = channel;
+                printf("WFB stream: channel_id %u (link_id %u, radio_port %u)\n",
+                       channel, channel >> 8, channel & 0xff);
+            }
         }
 
         packets++;
@@ -149,6 +174,7 @@ static int sniff(const char *ifname, int seconds)
     }
 
     printf("captured %lu packets, %lu bytes\n", packets, bytes);
+    printf("captured %lu WFB-NG packets\n", wfb_packets);
     if (packets == 0)
         printf("nothing received: wrong channel, drone not transmitting,"
                " or antenna/RF issue\n");
