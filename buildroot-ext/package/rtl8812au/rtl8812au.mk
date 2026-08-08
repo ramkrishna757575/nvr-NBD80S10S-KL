@@ -14,6 +14,13 @@ RTL8812AU_SITE_METHOD = local
 RTL8812AU_LICENSE = GPL-2.0
 RTL8812AU_DEPENDENCIES = linux
 
+# A local-site package goes straight from rsync to configure, so the patch step
+# never runs and patches in this directory would be silently ignored.
+define RTL8812AU_APPLY_LOCAL_PATCHES
+	$(APPLY_PATCHES) $(@D) $(RTL8812AU_PKGDIR) \*.patch
+endef
+RTL8812AU_POST_RSYNC_HOOKS += RTL8812AU_APPLY_LOCAL_PATCHES
+
 define RTL8812AU_BUILD_CMDS
 	$(MAKE) -C $(@D) ARCH=arm CROSS_COMPILE=$(TARGET_CROSS) KSRC=$(LINUX_DIR)
 endef

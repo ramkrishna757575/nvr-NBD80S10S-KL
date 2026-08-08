@@ -1,0 +1,20 @@
+rtw_br_ext.c uses LINUX_VERSION_CODE but never includes linux/version.h. It
+builds on kernels that happen to pull the header in through one of the other
+includes; 4.9.84 does not, so the file fails to compile against this SDK:
+
+    rtw_br_ext.c:25:6:  warning: "LINUX_VERSION_CODE" is not defined
+    rtw_br_ext.c:25:42: error: missing binary operator before token "("
+
+Carried as a package patch so buildroot applies it to its own copy of the
+source. The build directory this package rsyncs from must stay pristine.
+
+--- a/core/rtw_br_ext.c
++++ b/core/rtw_br_ext.c
+@@ -15,6 +15,7 @@
+ #define _RTW_BR_EXT_C_
+ 
+ #ifdef __KERNEL__
++	#include <linux/version.h>
+ 	#include <linux/if_arp.h>
+ 	#include <net/ip.h>
+ 	#include <linux/atalk.h>
