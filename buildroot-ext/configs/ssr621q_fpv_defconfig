@@ -1,0 +1,58 @@
+# SigmaStar SSR621Q / Infinity2M ground station.
+#
+# Milestone 1 scope: prove buildroot can drive the vendor 4.9.84 tree and get
+# a uImage out of it. No vendor blobs, no wfb-ng, no rootfs of consequence yet.
+
+# ── Architecture ─────────────────────────────────────────────────────────────
+BR2_arm=y
+BR2_cortex_a7=y
+BR2_ARM_INSTRUCTIONS_ARM=y
+# The toolchain is built --with-fpu=vfpv3-d16, not the neon-vfpv4 a Cortex-A7
+# would normally imply. Declaring anything else fails buildroot's ABI check.
+BR2_ARM_FPU_VFPV3D16=y
+BR2_ARM_EABIHF=y
+
+# ── Toolchain ────────────────────────────────────────────────────────────────
+# Deliberately the same Bootlin 2018.11 toolchain build-sdk.sh already uses:
+# gcc 7.3.0, glibc 2.27, 4.1 kernel headers. The MI blobs are prebuilt against
+# that glibc, and gcc 7.3 is the compiler this vendor kernel is known to build
+# with, so reusing it keeps the port from changing two things at once.
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y
+BR2_TOOLCHAIN_EXTERNAL_PREINSTALLED=y
+BR2_TOOLCHAIN_EXTERNAL_PATH="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/../build/toolchain/armv7-eabihf--glibc--stable-2018.11-1"
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_PREFIX="arm-buildroot-linux-gnueabihf"
+BR2_TOOLCHAIN_EXTERNAL_GCC_7=y
+BR2_TOOLCHAIN_EXTERNAL_HEADERS_4_1=y
+# The selectable symbol is the CUSTOM_ one; BR2_TOOLCHAIN_EXTERNAL_GLIBC is what
+# it selects. Setting the latter directly is silently ignored and the choice
+# falls back to uClibc, which the prebuilt MI blobs will not load against.
+BR2_TOOLCHAIN_EXTERNAL_CUSTOM_GLIBC=y
+BR2_TOOLCHAIN_EXTERNAL_CXX=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_SSP=y
+BR2_TOOLCHAIN_EXTERNAL_HAS_SSP_STRONG=y
+
+# ── System ───────────────────────────────────────────────────────────────────
+BR2_TARGET_GENERIC_HOSTNAME="nvr-gs"
+BR2_TARGET_GENERIC_ISSUE="SSR621Q ground station"
+
+# Written by build-buildroot.sh; carries LINUX_OVERRIDE_SRCDIR.
+BR2_PACKAGE_OVERRIDE_FILE="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/../build/local.mk"
+
+# ── Kernel ───────────────────────────────────────────────────────────────────
+# The source is the vendor SDK tree, supplied via LINUX_OVERRIDE_SRCDIR in
+# buildroot's local.mk (written by build-buildroot.sh) so nothing is fetched.
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="4.9.84"
+BR2_LINUX_KERNEL_USE_DEFCONFIG=y
+BR2_LINUX_KERNEL_DEFCONFIG="infinity2m_ssc010a_s01a"
+BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/board/ssr621q/linux.fragment"
+# Ask for zImage, not uImage. SigmaStar's rule hangs off the zImage recipe and
+# produces arch/arm/boot/uImage as a by-product, wrapping the raw Image with the
+# bundled scripts/mkimage and appending the built-in DTB. Asking for uImage
+# instead runs the stock rule, which wraps zImage and wants a LOADADDR.
+# See the same reasoning in build-sdk.sh.
+BR2_LINUX_KERNEL_IMAGE_TARGET_CUSTOM=y
+BR2_LINUX_KERNEL_IMAGE_TARGET_NAME="zImage"
+BR2_LINUX_KERNEL_IMAGE_NAME="uImage"

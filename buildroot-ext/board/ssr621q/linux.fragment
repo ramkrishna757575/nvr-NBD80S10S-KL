@@ -1,0 +1,27 @@
+# Applied on top of the vendor infinity2m_ssc010a_s01a_defconfig.
+# Mirrors the scripts/config calls in build-sdk.sh.
+
+# USB, for the Wi-Fi adapter and mass storage.
+CONFIG_USB=y
+CONFIG_USB_COMMON=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_STORAGE=y
+
+# cfg80211 for the RTL drivers. WEXT is what the vendor tooling talks.
+CONFIG_CFG80211=y
+CONFIG_CFG80211_WEXT=y
+
+# TUN sits inside "if NET_CORE" in drivers/net/Kconfig, and the vendor
+# defconfig leaves NET_CORE off, so it is silently dropped without this.
+CONFIG_NET_CORE=y
+CONFIG_TUN=y
+
+# Built-in initramfs, xz rather than gzip. usr/Makefile picks its compressor
+# from whichever CONFIG_RD_* is set, so the others have to go off.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_XZ=y
+# CONFIG_RD_GZIP is not set
+# CONFIG_RD_BZIP2 is not set
+# CONFIG_RD_LZMA is not set
+# CONFIG_RD_LZO is not set
+# CONFIG_RD_LZ4 is not set

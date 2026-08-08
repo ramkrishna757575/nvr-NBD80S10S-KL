@@ -1,0 +1,42 @@
+scripts/dtc: drop the redundant yylloc definition
+
+The bundled dtc defines YYLTYPE yylloc twice: once in the lexer and once in the
+bison-generated parser. Both are tentative definitions, so a compiler defaulting
+to -fcommon merges them and the host tool links. gcc 10 made -fno-common the
+default, and the two become competing definitions:
+
+  scripts/dtc/dtc-parser.tab.o:(.bss+0x10): multiple definition of `yylloc';
+  scripts/dtc/dtc-lexer.lex.o:(.bss+0x0): first defined here
+
+The parser's definition is the one the generated code expects, so the lexer's is
+what goes. This is upstream commit e5e2cbf6ed76 ("scripts/dtc: Remove redundant
+YYLOC global declaration"), which landed in 5.6 and was never backported this
+far.
+
+build-sdk.sh works around the same thing by passing -fcommon in HOSTCFLAGS.
+That is left alone: it still builds, this patch simply means it no longer has to.
+
+Both the flex source and the pre-generated lexer are changed. The kernel builds
+the _shipped copy unless flex regenerates it, so patching only one of the two
+leaves the failure in place depending on which the build picks.
+
+--- a/sigmastar/kernel/4.9.84/scripts/dtc/dtc-lexer.l
++++ b/sigmastar/kernel/4.9.84/scripts/dtc/dtc-lexer.l
+@@ -38,7 +38,6 @@
+ #include "srcpos.h"
+ #include "dtc-parser.tab.h"
+ 
+-YYLTYPE yylloc;
+ extern bool treesource_error;
+ 
+ /* CAUTION: this will stop working if we ever use yyless() or yyunput() */
+--- a/sigmastar/kernel/4.9.84/scripts/dtc/dtc-lexer.lex.c_shipped
++++ b/sigmastar/kernel/4.9.84/scripts/dtc/dtc-lexer.lex.c_shipped
+@@ -637,7 +637,6 @@
+ #include "srcpos.h"
+ #include "dtc-parser.tab.h"
+ 
+-YYLTYPE yylloc;
+ extern bool treesource_error;
+ 
+ /* CAUTION: this will stop working if we ever use yyless() or yyunput() */
