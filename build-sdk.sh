@@ -2379,14 +2379,16 @@ node = '''
 '''
 
 # Drop any node this script added previously, so the definition below always
-# wins even if an earlier build inserted a different one.
+# wins even if an earlier build inserted a different one. The match consumes the
+# newline on both sides and the insert adds none of its own: re-running has to
+# leave the file byte-identical, or every build grows it by a blank line.
 src, dropped = re.subn(r'\n[ \t]*/\* piu_timer_for_vdec.*?\n[ \t]*\};\n',
-                       '\n', src, flags=re.S)
+                       '', src, flags=re.S)
 
 # Insert after the vendor's commented-out copy, which is an unambiguous anchor.
 i = src.index('timer_clockevent: timer@1F006040')
 j = src.index('*/', i) + 2
-open(path, 'w').write(src[:j] + '\n' + node + src[j:])
+open(path, 'w').write(src[:j] + node + src[j:])
 print("dts: %s PIU timer node for mi_vdec" % ("replaced" if dropped else "added"))
 PYEOF
 
