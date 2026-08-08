@@ -1,0 +1,61 @@
+SigmaStar's build scripts are python2 and the kernel Makefile invokes them as
+`python`, which on any current distro is python3. build/shim/python points at
+python3, so these three have to actually run there.
+
+`long` is gone; `int` is arbitrary precision. mmap.find() wants bytes, not str.
+The DTB reader has to open in binary or the seek/read arithmetic is in
+characters. And the oversize message called dtb.size(), which never existed on
+a str -- it would have raised AttributeError instead of printing the error it
+was written to print, so it is fixed to use the size already measured.
+
+--- a/sigmastar/kernel/4.9.84/scripts/ms_bin_option_update_int.py
++++ b/sigmastar/kernel/4.9.84/scripts/ms_bin_option_update_int.py
+@@ -4,11 +4,11 @@ import re, fnmatch, os, sys, mmap, struct
+ 
+ if __name__ == '__main__':
+ 
+-    name=sys.argv[2]
++    name=sys.argv[2].encode()
+     if sys.argv[3].upper().startswith( '0X' ):
+-        value=long(sys.argv[3],16)
++        value=int(sys.argv[3],16)
+     else:
+-        value=long(sys.argv[3])
++        value=int(sys.argv[3])
+ 
+     fmap=mmap.mmap(os.open(sys.argv[1],os.O_RDWR),0)
+ 
+--- a/sigmastar/kernel/4.9.84/scripts/ms_builtin_dtb_update.py
++++ b/sigmastar/kernel/4.9.84/scripts/ms_builtin_dtb_update.py
+@@ -4,9 +4,9 @@ import re, fnmatch, os, sys, mmap, struct
+ 
+ if __name__ == '__main__':
+     
+-    name='#MS_DTB#'
++    name=b'#MS_DTB#'
+  
+-    dtb_file=open(sys.argv[2])
++    dtb_file=open(sys.argv[2],'rb')
+     dtb_file.seek(0,os.SEEK_END)
+     size=dtb_file.tell()
+     dtb_file.seek(0,os.SEEK_SET)
+@@ -14,7 +14,7 @@ if __name__ == '__main__':
+     dtb_file.close()
+     
+     if sys.getsizeof(dtb) > (64*1024):
+-        print ('DTB size 0x%08X too big to fit in 64K limit!!' % dtb.size())
++        print ('DTB size 0x%08X too big to fit in 64K limit!!' % size)
+         sys.exit() 
+         
+     fmap=mmap.mmap(os.open(sys.argv[1],os.O_RDWR),0)
+--- a/sigmastar/kernel/4.9.84/scripts/ms_gen_mvxv_h.py
++++ b/sigmastar/kernel/4.9.84/scripts/ms_gen_mvxv_h.py
+@@ -18,7 +18,7 @@ if __name__ == '__main__':
+     #print args
+     
+     if args.file is None :
+-        print 'ERROR: must specify output header file!!'
++        print('ERROR: must specify output header file!!')
+         sys.exit(-1)
+ 
+     version_file=open(args.file,'w')

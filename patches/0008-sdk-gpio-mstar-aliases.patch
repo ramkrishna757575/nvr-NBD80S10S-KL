@@ -1,0 +1,46 @@
+The stock XiongMai mhal.ko is a prebuilt blob that imports mstar_gpio_* symbols.
+This SDK's GPIO driver exports the same functions under camdriver_gpio_* names --
+identical signatures, identical behaviour, renamed at some point between the two
+trees. Without the old names insmod fails on unknown symbols and nothing in the
+MI stack comes up.
+
+Thin wrappers rather than renaming the originals: the SDK's own callers use the
+camdriver_ names, so both have to exist.
+
+--- a/sigmastar/kernel/4.9.84/drivers/sstar/gpio/mdrv_gpio_io.c
++++ b/sigmastar/kernel/4.9.84/drivers/sstar/gpio/mdrv_gpio_io.c
+@@ -273,3 +273,34 @@ EXPORT_SYMBOL(camdriver_gpio_direction_input);
+ MODULE_AUTHOR("SSTAR");
+ MODULE_DESCRIPTION("GPIO driver");
+ MODULE_LICENSE("GPL");
++
++/* Aliases so the prebuilt stock XM mhal.ko can resolve its GPIO symbols. */
++int mstar_gpio_request(struct gpio_chip *chip, unsigned offset)
++{
++    return camdriver_gpio_request(chip, offset);
++}
++EXPORT_SYMBOL(mstar_gpio_request);
++
++int mstar_gpio_get(struct gpio_chip *chip, unsigned offset)
++{
++    return camdriver_gpio_get(chip, offset);
++}
++EXPORT_SYMBOL(mstar_gpio_get);
++
++int mstar_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
++{
++    return camdriver_gpio_direction_input(chip, offset);
++}
++EXPORT_SYMBOL(mstar_gpio_direction_input);
++
++int mstar_gpio_direction_output(struct gpio_chip *chip, unsigned offset, int value)
++{
++    return camdriver_gpio_direction_output(chip, offset, value);
++}
++EXPORT_SYMBOL(mstar_gpio_direction_output);
++
++int mstar_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
++{
++    return camdriver_gpio_to_irq(chip, offset);
++}
++EXPORT_SYMBOL(mstar_gpio_to_irq);

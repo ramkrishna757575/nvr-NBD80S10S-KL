@@ -41,75 +41,32 @@ fi
 export PATH=$BUILD_DIR/shim:$TOOLCHAIN_BIN:$PATH
 export ARCH CROSS_COMPILE
 
-# ── Python 2 -> 3 fixes for SigmaStar's build helpers ─────────────────────────
-# These ship as python2 and break under python3. Applied idempotently so the build
-# still works after a fresh clone of the SDK.
-echo "=== [1/3] Patching SigmaStar python2 build scripts ==="
-DTB_PY=$KERNEL_DIR/scripts/ms_builtin_dtb_update.py
-INT_PY=$KERNEL_DIR/scripts/ms_bin_option_update_int.py
-MVXV_PY=$KERNEL_DIR/scripts/ms_gen_mvxv_h.py
+# ── Vendor kernel patches ─────────────────────────────────────────────────────
+# Every change this build makes to build/sdk lives in patches/, so the diff
+# against upstream is reviewable and the tree restores with a git checkout. Each
+# is guarded on something the patch itself introduces, so a re-run is a no-op
+# rather than a failed hunk.
+echo "=== [1/3] Patching the SigmaStar kernel tree ==="
+SDK_ROOT=$BUILD_DIR/sdk
 
-# mmap.find() needs bytes, and the DTB must be read in binary mode.
-sed -i -e "s/^    name='#MS_DTB#'/    name=b'#MS_DTB#'/" \
-       -e "s/^    dtb_file=open(sys.argv\[2\])$/    dtb_file=open(sys.argv[2],'rb')/" \
-       -e "s/% dtb.size())/% size)/" \
-       $DTB_PY
-
-# python3 has no long(), and mmap.find() needs bytes.
-sed -i -e "s/^    name=sys.argv\[2\]$/    name=sys.argv[2].encode()/" \
-       -e "s/=long(/=int(/g" \
-       $INT_PY
-
-# print statements. This one runs from the kernel.release target, so it breaks
-# the build before a single object is compiled. Idempotent: a converted line
-# starts "print(" and no longer matches.
-sed -i -E -e "s/^([[:space:]]*)print[[:space:]]+('.*')$/\1print(\2)/" \
-          -e "s/^([[:space:]]*)print[[:space:]]+(\".*\")$/\1print(\2)/" \
-          $MVXV_PY
-
-# ── mstar_gpio_* aliases for the stock XM mhal.ko ─────────────────────────────
-# The prebuilt XM mhal.ko (the only one with HDMI TX support) links against five
-# gpio_chip callbacks that XM's kernel exports as mstar_gpio_*. This kernel has the
-# identical functions with identical signatures under the name camdriver_gpio_*,
-# already non-static and exported, so aliasing is a rename rather than a guess.
-# Without these, XM's mhal cannot load and nothing downstream of it does either.
-GPIO_C=$KERNEL_DIR/drivers/sstar/gpio/mdrv_gpio_io.c
-if ! grep -q "mstar_gpio_request" $GPIO_C; then
-    cat >> $GPIO_C << 'EOF'
-
-/* Aliases so the prebuilt stock XM mhal.ko can resolve its GPIO symbols. */
-int mstar_gpio_request(struct gpio_chip *chip, unsigned offset)
-{
-    return camdriver_gpio_request(chip, offset);
+# $1 = marker to test for, $2 = file to test it in, $3 = patch file
+apply_sdk_patch() {
+    grep -q "$1" "$2" 2>/dev/null && return 0
+    patch -p1 -d $SDK_ROOT < $SCRIPT_DIR/patches/$3 ||
+        { echo "error: $3 did not apply" >&2; exit 1; }
 }
-EXPORT_SYMBOL(mstar_gpio_request);
 
-int mstar_gpio_get(struct gpio_chip *chip, unsigned offset)
-{
-    return camdriver_gpio_get(chip, offset);
-}
-EXPORT_SYMBOL(mstar_gpio_get);
+# python2 helpers the kernel Makefile runs as "python", which is python3 here.
+apply_sdk_patch "name=b'#MS_DTB#'" "$KERNEL_DIR/scripts/ms_builtin_dtb_update.py" \
+    0007-sdk-python3-build-scripts.patch
 
-int mstar_gpio_direction_input(struct gpio_chip *chip, unsigned offset)
-{
-    return camdriver_gpio_direction_input(chip, offset);
-}
-EXPORT_SYMBOL(mstar_gpio_direction_input);
+# Five gpio_chip callbacks the prebuilt XM mhal.ko imports under their old names.
+apply_sdk_patch "mstar_gpio_request" "$KERNEL_DIR/drivers/sstar/gpio/mdrv_gpio_io.c" \
+    0008-sdk-gpio-mstar-aliases.patch
 
-int mstar_gpio_direction_output(struct gpio_chip *chip, unsigned offset, int value)
-{
-    return camdriver_gpio_direction_output(chip, offset, value);
-}
-EXPORT_SYMBOL(mstar_gpio_direction_output);
-
-int mstar_gpio_to_irq(struct gpio_chip *chip, unsigned offset)
-{
-    return camdriver_gpio_to_irq(chip, offset);
-}
-EXPORT_SYMBOL(mstar_gpio_to_irq);
-EOF
-    echo "added mstar_gpio_* aliases to mdrv_gpio_io.c"
-fi
+# The PIU timer node mi_vdec needs; without it frames arrive and none decode.
+apply_sdk_patch "piu_timer_for_vdec" "$KERNEL_DIR/arch/arm/boot/dts/infinity2m.dtsi" \
+    0009-sdk-dts-piu-timer.patch
 
 # ── MI modules and libraries ──────────────────────────────────────────────────
 # Three module sets are staged so they can be compared on the target without a
@@ -2338,59 +2295,8 @@ echo "=== [5/5] Building SDK kernel ($DEFCONFIG) ==="
 cd $KERNEL_DIR
 make $DEFCONFIG
 
-# ── Device tree: restore the PIU timer node ──────────────────────────────────
-# XiongMai's mi_vdec.ko drives its decode work off the PIU timer: it looks the
-# node up with of_find_compatible_node("sstar,piu-clocksource"), resolves the
-# platform device with of_find_device_by_node(), and installs its own
-# TimerirqHandler. Every SigmaStar board dtsi has that node commented out (they
-# use the ARM architected timer), so the lookup fails, the timer interrupt never
-# fires, and queued frames are never decoded. The symptom is MI_VDEC_GetChnStat
-# reporting frames received but decoded=0, with no decode error, no VPU firmware
-# banner, and "TimerProbe ... Fail!" as the only warning.
-#
-# status must be "ok": of_platform_populate() only creates a platform device for
-# an available node, and without one of_find_device_by_node() fails. That is
-# safe here because CONFIG_MS_PIU_TIMER is not set, so the kernel's own driver
-# for this compatible is not built and nothing else touches the timer or its
-# interrupt -- mi_vdec gets the hardware to itself.
-#
-# The interrupt specifier must be three cells with no phandle, matching the
-# other working nodes in this file (see rtcpwc / dec): ms_main_intc declares
-# #interrupt-cells = <3> and the soc node already sets interrupt-parent. The
-# vendor's commented-out copy of this node has a four-cell form with the parent
-# phandle inlined; copying that verbatim maps the wrong interrupt, so the timer
-# probes successfully but never fires.
-python3 - "$KERNEL_DIR/arch/arm/boot/dts/infinity2m.dtsi" << 'PYEOF'
-import re
-import sys
-
-path = sys.argv[1]
-src = open(path).read()
-
-node = '''
-        /* piu_timer_for_vdec: required by the XM mi_vdec.ko -- see build-sdk.sh */
-        timer_clockevent: timer@1F006040 {
-            compatible = "sstar,piu-clocksource","sstar,piu-clockevent";
-            reg = <0x1F006040 0x100>;
-            interrupts = <GIC_SPI INT_FIQ_TIMER_0 IRQ_TYPE_LEVEL_HIGH>;
-            clocks = <&CLK_xtali_12m>;
-            status = "ok";
-        };
-'''
-
-# Drop any node this script added previously, so the definition below always
-# wins even if an earlier build inserted a different one. The match consumes the
-# newline on both sides and the insert adds none of its own: re-running has to
-# leave the file byte-identical, or every build grows it by a blank line.
-src, dropped = re.subn(r'\n[ \t]*/\* piu_timer_for_vdec.*?\n[ \t]*\};\n',
-                       '', src, flags=re.S)
-
-# Insert after the vendor's commented-out copy, which is an unambiguous anchor.
-i = src.index('timer_clockevent: timer@1F006040')
-j = src.index('*/', i) + 2
-open(path, 'w').write(src[:j] + node + src[j:])
-print("dts: %s PIU timer node for mi_vdec" % ("replaced" if dropped else "added"))
-PYEOF
+# The PIU timer node mi_vdec needs is patched in near the top of this script, with
+# the rest of the vendor tree changes -- see patches/0009-sdk-dts-piu-timer.patch.
 
 # A known-good 720p Annex-B clip (SPS/PPS/IDR, 90 access units) so the decoder
 # can be tested without the network or the RTP depacketiser in the path.

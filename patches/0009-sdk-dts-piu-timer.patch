@@ -1,0 +1,40 @@
+XiongMai's mi_vdec.ko drives its decode work off the PIU timer: it looks the node
+up with of_find_compatible_node("sstar,piu-clocksource"), resolves the platform
+device with of_find_device_by_node(), and installs its own TimerirqHandler.
+Every SigmaStar board dtsi has that node commented out -- they use the ARM
+architected timer -- so the lookup fails, the timer interrupt never fires, and
+queued frames are never decoded. The symptom is MI_VDEC_GetChnStat reporting
+frames received but decoded=0, with no decode error, no VPU firmware banner, and
+"TimerProbe ... Fail!" as the only warning.
+
+status must be "ok": of_platform_populate() only creates a platform device for an
+available node, and without one of_find_device_by_node() fails. That is safe here
+because CONFIG_MS_PIU_TIMER is not set, so the kernel's own driver for this
+compatible is not built and nothing else touches the timer or its interrupt --
+mi_vdec gets the hardware to itself.
+
+The interrupt specifier must be three cells with no phandle, matching the other
+working nodes in this file (see rtcpwc / dec): ms_main_intc declares
+#interrupt-cells = <3> and the soc node already sets interrupt-parent. The
+vendor's commented-out copy just above has a four-cell form with the parent
+phandle inlined; copying that verbatim maps the wrong interrupt, so the timer
+probes successfully but never fires.
+
+--- a/sigmastar/kernel/4.9.84/arch/arm/boot/dts/infinity2m.dtsi
++++ b/sigmastar/kernel/4.9.84/arch/arm/boot/dts/infinity2m.dtsi
+@@ -157,6 +157,15 @@
+             clocks = <&CLK_xtali_12m>;
+         };
+ */
++        /* piu_timer_for_vdec: required by the XM mi_vdec.ko -- see build-sdk.sh */
++        timer_clockevent: timer@1F006040 {
++            compatible = "sstar,piu-clocksource","sstar,piu-clockevent";
++            reg = <0x1F006040 0x100>;
++            interrupts = <GIC_SPI INT_FIQ_TIMER_0 IRQ_TYPE_LEVEL_HIGH>;
++            clocks = <&CLK_xtali_12m>;
++            status = "ok";
++        };
++
+ #ifndef __DTS_DCDO__
+         dec: dec {
+             compatible = "sstar,dec";
