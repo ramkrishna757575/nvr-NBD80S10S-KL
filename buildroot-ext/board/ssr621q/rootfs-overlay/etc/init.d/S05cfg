@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# Mount the cfg partition and expose the link settings at /etc/wfb.conf.
+#
+# This partition sits above the system image in flash, so what is written here
+# survives a reboot and a reflash. It is a real filesystem rather than a
+# hand-rolled blob, so it can be edited over SSH with vi and copied to with scp.
+#
+# Needs mtdparts=...,512k@0xf80000(cfg) on the kernel command line.
+#
+
+CFG_DIR=/mnt/cfg
+
+mount_cfg() {
+	mkdir -p $CFG_DIR
+	m=$(awk -F'[:"]' '/"cfg"/{print $1}' /proc/mtd 2>/dev/null | head -1)
+	[ -n "$m" ] || return 1
+	n=${m#mtd}
+	mount -t jffs2 /dev/mtdblock$n $CFG_DIR 2>/dev/null && return 0
+	# An erased NOR partition is not a filesystem yet. mtd-utils dropped
+	# flash_eraseall, so this uses flash_erase where build-sdk.sh did not.
+	echo "cfg: formatting /dev/$m (first boot, takes a moment)"
+	flash_erase -j /dev/$m 0 0 >/dev/null 2>&1
+	mount -t jffs2 /dev/mtdblock$n $CFG_DIR 2>/dev/null
+}
+
+case "$1" in
+  start)
+	if mount_cfg; then
+		echo "cfg: $CFG_DIR mounted -- settings here survive reboot and reflash"
+		if [ ! -f $CFG_DIR/wfb.conf ]; then
+			cp /etc/wfb.conf.default $CFG_DIR/wfb.conf
+			echo "cfg: wrote a default $CFG_DIR/wfb.conf"
+		fi
+		ln -sf $CFG_DIR/wfb.conf /etc/wfb.conf
+	else
+		echo "cfg: no 'cfg' partition, settings will NOT persist. Add to bootargs:"
+		echo "     mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)"
+		# Still give the tools something to read, so defaults apply.
+		[ -e /etc/wfb.conf ] || ln -sf /etc/wfb.conf.default /etc/wfb.conf
+	fi
+	;;
+  stop)
+	# reboot(2) unmounts nothing, so a config edit made seconds earlier
+	# would otherwise be lost.
+	umount $CFG_DIR 2>/dev/null
+	;;
+  restart|reload)
+	;;
+  *)
+	echo "Usage: $0 {start|stop}"
+	exit 1
+esac
+
+exit 0

@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Start the radio link.
+#
+# Runs last and in the background: the console and ssh are already up by this
+# point, so a wifi problem can never cost us the only way in.
+#
+# Three sources, lowest to highest precedence: the built-in default, the
+# persistent config file, then the kernel command line. The file is what you
+# edit over SSH; the command line stays as the override that does not need a
+# working filesystem.
+#   link=wfb|apfpv|off        pick or disable the link
+#   apfpv=off                 disable it entirely
+#
+
+# Reads one key from the persistent config. Trims a trailing comment and outer
+# whitespace but keeps inner spaces, so a passphrase containing one survives.
+conf_get() {
+	[ -f /etc/wfb.conf ] || return 0
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null |
+		head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'
+}
+
+case "$1" in
+  start)
+	APFPV_ON=1
+	LINK_MODE=""
+	for arg in $(cat /proc/cmdline); do
+		case $arg in
+			apfpv=off) APFPV_ON=0 ;;
+			link=*)    LINK_MODE=${arg#link=} ;;
+		esac
+	done
+	[ -n "$LINK_MODE" ] || LINK_MODE=$(conf_get mode)
+	[ -n "$LINK_MODE" ] || LINK_MODE=apfpv
+	[ $APFPV_ON -eq 1 ] || LINK_MODE=off
+
+	case $LINK_MODE in
+	  wfb)
+		echo "link: wfb-ng (log: /tmp/wfb.log) -- edit /mnt/cfg/wfb.conf to change"
+		(wfb-start > /tmp/wfb.log 2>&1) &
+		;;
+	  apfpv)
+		SSID=$(conf_get ssid)
+		echo "apfpv: autostarting for SSID '$SSID' (log: /tmp/apfpv.log)"
+		(apfpv "$SSID" "$(conf_get psk)" > /tmp/apfpv.log 2>&1) &
+		;;
+	  *)
+		echo "link: disabled ($LINK_MODE)"
+		;;
+	esac
+	;;
+  stop)
+	wfb-stop 2>/dev/null
+	fpv-stop 2>/dev/null
+	;;
+  restart|reload)
+	"$0" stop
+	"$0" start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit 0

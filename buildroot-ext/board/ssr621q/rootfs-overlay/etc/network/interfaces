@@ -8,6 +8,10 @@ iface lo inet loopback
 # The PHY negotiates link after S40network runs, so the first discover goes out
 # with no carrier. -b lets udhcpc background itself and keep trying rather than
 # giving up and failing the interface.
+#
+# eth0.script rather than buildroot's default: it writes /tmp/eth-ip, falls back
+# to a fixed address when there is no lease, and refuses to steal the default
+# route from the air unit's AP.
 auto eth0
 iface eth0 inet dhcp
-	udhcpc_opts -b
+	udhcpc_opts -b -s /usr/share/udhcpc/eth0.script

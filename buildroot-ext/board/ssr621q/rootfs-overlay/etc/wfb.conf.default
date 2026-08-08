@@ -1,0 +1,76 @@
+# Ground station link settings.
+#
+# Edit over SSH and reboot for the change to take effect:
+#   ssh root@<board>  ;  vi /mnt/cfg/wfb.conf  ;  reboot
+#
+# mode      apfpv  join the air unit's WiFi AP and pull RTSP from it. Works with
+#                  a stock OpenIPC/majestic camera, no pairing, short range.
+#           wfb    wfb-ng: monitor mode with FEC. Needs a matching air unit and
+#                  a shared key. This is the real long-range link.
+mode = apfpv
+
+# --- wfb mode only. Every one of these must match the air unit. ---
+# 165 (5825 MHz) and link_id 7669206 are what OpenIPC's wifibroadcast-ng ships
+# in /etc/wfb.yaml on the air unit. Its video transmitter passes no -p, so it
+# uses radio_port 0; ports 144/16 and 160/32 are telemetry and the tunnel.
+channel = 165
+link_id = 7669206
+radio_port = 0
+udp_port = 5600
+
+# Key pair. wfb-start generates one on first use if it is missing and writes
+# both halves next to this file; copy drone.key to the air unit as /etc/drone.key
+# (or scp your existing gs.key over the top of this one). Either half works on
+# either end -- both derive the same shared secret -- but the two ends must use
+# files from the same wfb_keygen run. wfb-keyinfo prints a key's public halves.
+key = /mnt/cfg/wfb/gs.key
+
+# What the air unit sends. Nothing announces this over wfb -- there is no SDP --
+# so it has to be stated here. OpenIPC's defaults are h265 at 1920x1080; the
+# decoder cannot scale up, so video_size must be the stream's own size.
+codec = h265
+video_size = 1920x1080
+
+# Adaptive link. Scores the downlink and reports it to the air unit, which raises
+# or lowers its MCS and bitrate to suit. Needs alink_drone running there, and an
+# uplink to carry the reports -- on this board that is a mirrored WFB tunnel,
+# started automatically. Measured on the bench: MCS 2 -> 4, 12.6 -> 23.9 Mbps.
+#
+# On by default. It costs nothing when the air unit is not listening, and the
+# failure it used to invite -- alink_drone dropping to MCS 0 when the reports
+# stop -- is now covered by a supervisor that restarts the sender.
+#
+# Set to 0 if this ground station must never transmit.
+#
+# alink_ip/alink_port are where the reports go. 10.5.0.10:9999 is alink_drone's
+# default over the wfb tunnel; for the tunnel-free path, point these at the local
+# wfb_tx and have the air unit's wfb_rx deliver to 127.0.0.1:9999.
+alink = 1
+alink_ip = 10.5.0.10
+alink_port = 9999
+alink_tun_name = wfb-gs
+alink_tun_addr = 10.5.0.1/24
+alink_tx_port = 5800
+alink_rx_port = 5801
+alink_tx_radio_port = 160
+alink_rx_radio_port = 32
+
+# On-screen link stats over the video: rssi, snr, MCS, bitrate, FEC and losses.
+# Only the glyphs are drawn, so the picture shows through around them.
+osd = 1
+
+# --- apfpv mode only ---
+ssid = OpenIPC
+psk = 12345678
+
+# Regulatory domain, as a two-letter country code. The default 00 is the world
+# domain, which forbids transmitting on most 5GHz channels -- a 5GHz air unit
+# will not associate reliably until this is set to your own country.
+region = 00
+
+# --- access ---
+# telnet is an unencrypted console and, unlike SSH, sends the password in the
+# clear. Off by default; turn it on only to recover a board whose SSH has broken,
+# and only on a network you trust. telnet=1 on the kernel command line does the
+# same without needing this file to be readable.
+telnet = 0

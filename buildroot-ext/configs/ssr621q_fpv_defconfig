@@ -57,6 +57,15 @@ BR2_PACKAGE_SIGMASTAR_MI=y
 BR2_PACKAGE_GS_TOOLS=y
 BR2_PACKAGE_RTL8812AU=y
 BR2_PACKAGE_WFB_NG=y
+# apfpv mode, the default, joins the air unit's AP. wpa_supplicant needs both
+# drivers: apfpv tries nl80211 and falls back to wext, because the RTL fork
+# does not always bring up a working cfg80211 path. iw is what it uses to read
+# the interface mode, the signal and the scan results.
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_WPA_SUPPLICANT_NL80211=y
+BR2_PACKAGE_WPA_SUPPLICANT_WEXT=y
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+BR2_PACKAGE_IW=y
 # So a board running this image can write the stock firmware back to mtd2
 # itself, instead of the only way out being U-Boot over serial.
 BR2_PACKAGE_MTD=y
