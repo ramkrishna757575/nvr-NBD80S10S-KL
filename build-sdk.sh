@@ -759,8 +759,7 @@ chmod +x /bin/load-mi
 # telnet shell, which is the only usable console on this board.
 cat > /bin/load-wifi << 'INNER'
 #!/bin/sh
-KO=/lib/modules/wifi/88XXau_wfb.ko
-[ -f $KO ] || { echo "no $KO"; exit 1; }
+DIR=/lib/modules/wifi
 
 # Regulatory domain. Without one the driver runs in the world domain (00),
 # which forbids active scanning and transmission on most 5GHz channels: the
@@ -770,36 +769,53 @@ KO=/lib/modules/wifi/88XXau_wfb.ko
 CC=$(cat /etc/wifi-cc 2>/dev/null)
 [ -n "$CC" ] || CC=00
 
-if grep -q "^88XXau_wfb " /proc/modules; then
-    echo "88XXau_wfb already loaded"
-else
-    # Look the adapter up in sysfs; busybox here has no lsusb and there is no
-    # /proc/bus/usb. Port 3 (Sstar-ehci-3) is the one that enumerates reliably --
-    # port 2 browns out during enumeration (error -110, repeated power cycles).
-    found=""
-    for d in /sys/bus/usb/devices/*/idVendor; do
-        [ -f "$d" ] || continue
-        v=$(cat $d)
-        p=$(cat ${d%idVendor}idProduct 2>/dev/null)
-        case "$v:$p" in
-            2604:0012|0bda:8812|0bda:881a|2357:0101|0e8d:*)
-                found="$v:$p"; break ;;
-        esac
-    done
-    if [ -n "$found" ]; then
-        echo "adapter $found present"
-    else
-        echo "warning: no known RTL8812AU id in /sys/bus/usb/devices --"
-        echo "         if enumeration failed, move it to the other USB port"
-    fi
-
-    insmod $KO rtw_country_code=$CC "$@" || exit 1
-    echo "88XXau_wfb loaded (regulatory domain $CC)"
-    # Let the driver finish attaching before anyone touches the interface. The
-    # 8812AU re-enumerates once on probe, and poking it during that window seems
-    # to provoke a disconnect/re-enumerate loop.
-    sleep 5
+if grep -qE "^(88XXau_wfb|8812eu) " /proc/modules; then
+    echo "wifi driver already loaded"
+    ip link show wlan0 2>/dev/null || echo "wlan0 did not appear"
+    exit 0
 fi
+
+# Two chips, two drivers, and the wrong one binds nothing at all. Look the
+# adapter up in sysfs and pick: busybox here has no lsusb and there is no
+# /proc/bus/usb. Port 3 (Sstar-ehci-3) is the one that enumerates reliably --
+# port 2 browns out during enumeration (error -110, repeated power cycles).
+# The ids are each driver's own usb_intf.c table.
+KO=""
+found=""
+for d in /sys/bus/usb/devices/*/idVendor; do
+    [ -f "$d" ] || continue
+    v=$(cat $d)
+    p=$(cat ${d%idVendor}idProduct 2>/dev/null)
+    case "$v:$p" in
+        0bda:a81a|0bda:a82a|0bda:e822)
+            KO=$DIR/8812eu.ko; found="$v:$p (8812EU)"; break ;;
+        2604:0012|0bda:8812|0bda:881a|2357:0101|0e8d:*)
+            KO=$DIR/88XXau_wfb.ko; found="$v:$p (8812AU)"; break ;;
+    esac
+done
+
+if [ -n "$found" ]; then
+    echo "adapter $found"
+else
+    # An unlisted id is more likely a rebadged AU than a broken board, so try
+    # rather than refuse.
+    KO=$DIR/88XXau_wfb.ko
+    echo "warning: no known adapter id in /sys/bus/usb/devices --"
+    echo "         trying 8812AU; if enumeration failed, use the other USB port"
+fi
+
+[ -f "$KO" ] || { echo "no $KO"; exit 1; }
+
+# One unknown parameter makes insmod reject the whole module, and not every
+# driver build has rtw_country_code.
+insmod $KO rtw_country_code=$CC "$@" 2>/dev/null ||
+    insmod $KO "$@" ||
+    exit 1
+echo "$(basename $KO) loaded (regulatory domain $CC)"
+# Let the driver finish attaching before anyone touches the interface. The
+# 8812AU re-enumerates once on probe, and poking it during that window seems
+# to provoke a disconnect/re-enumerate loop.
+sleep 5
 
 ip link show wlan0 2>/dev/null || echo "wlan0 did not appear"
 INNER
@@ -1143,7 +1159,7 @@ for i in /sys/class/net/*; do
     [ -e "$i/device/driver" ] || continue
     drv=$(basename $(readlink -f "$i/device/driver"))
     case "$drv" in
-        rtl88xxau_wfb|rtl88x2eu|rtl88x2cu|88XXau*)
+        rtl88xxau_wfb|rtl88x2eu|rtl88x2cu|88XXau*|8812eu*)
             basename "$i"
             ;;
     esac
@@ -2454,6 +2470,28 @@ mkdir -p $INITRAMFS_DIR/lib/modules/wifi
 cp $RTL_KO $INITRAMFS_DIR/lib/modules/wifi/
 ${CROSS_COMPILE}strip --strip-debug $INITRAMFS_DIR/lib/modules/wifi/88XXau_wfb.ko
 echo "wifi: built 88XXau_wfb.ko ($(stat -c%s $INITRAMFS_DIR/lib/modules/wifi/88XXau_wfb.ko) bytes)"
+
+# ── RTL8812EU ────────────────────────────────────────────────────────────────
+# The BL-M8812EU2 and friends. Same story as above -- it has to see this kernel
+# config for vermagic. Realtek's Makefile ships configured for an x86 PC and
+# picks its own toolchain paths per platform; ARM_RPI is the generic 32-bit ARM
+# one, and KSRC/CROSS_COMPILE on the command line override what it sets.
+RTLEU_DIR=$BUILD_DIR/rtl8812eu
+if [ -d $RTLEU_DIR ]; then
+    sed -i -e 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' \
+           -e 's/^CONFIG_PLATFORM_ARM_RPI = n/CONFIG_PLATFORM_ARM_RPI = y/' \
+        $RTLEU_DIR/Makefile
+    make -C $RTLEU_DIR -j$JOBS ARCH=arm CROSS_COMPILE=$CROSS_COMPILE KSRC=$KERNEL_DIR
+
+    RTLEU_KO=$RTLEU_DIR/8812eu.ko
+    [ -f $RTLEU_KO ] || { echo "error: driver build produced no 8812eu.ko" >&2; exit 1; }
+    cp $RTLEU_KO $INITRAMFS_DIR/lib/modules/wifi/
+    ${CROSS_COMPILE}strip --strip-debug $INITRAMFS_DIR/lib/modules/wifi/8812eu.ko
+    echo "wifi: built 8812eu.ko ($(stat -c%s $INITRAMFS_DIR/lib/modules/wifi/8812eu.ko) bytes)"
+else
+    echo "error: $RTLEU_DIR missing -- run ./fetch-deps.sh" >&2
+    exit 1
+fi
 
 # Build zImage, not uImage, even though the board boots the uncompressed image.
 # Two rules in arch/arm/boot/Makefile write uImage: SigmaStar's, which hangs off

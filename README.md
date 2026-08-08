@@ -15,7 +15,7 @@ hardware, and puts it on the HDMI output.
 | Flash | 16 MB NOR SPI (XM25QH128C) |
 | VPU | Chips&Media Wave511 (H.264 / H.265 decode) |
 | Board ID | `INFINITY2M SSC010A-S01A-S` |
-| Wi-Fi | RTL8812AU over USB (must use the port that enumerates as `Sstar-ehci-3`) |
+| Wi-Fi | RTL8812AU or RTL8812EU over USB (must use the port that enumerates as `Sstar-ehci-3`) |
 
 ## What it does
 
@@ -181,7 +181,7 @@ the prompt used to be nearly impossible to catch.
 | `fpv-start` / `fpv-stop` | Start or stop the player by hand |
 | `fpv-probe [ip]` | Identify a camera's stream: port scan plus RTSP `DESCRIBE` |
 | `load-mi <set>` | Insert an MI module set |
-| `load-wifi` | Load the RTL8812AU driver |
+| `load-wifi` | Load the Wi-Fi driver matching the adapter |
 | `apfpv <ssid> <psk>` | Associate to an access point |
 | `wfb-nics` | List RTL88xx interfaces |
 | `mi-player` | The player; `-h` for options |

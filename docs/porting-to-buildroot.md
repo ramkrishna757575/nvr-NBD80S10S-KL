@@ -254,13 +254,22 @@ The biggest structural change, and independently valuable: it frees the RAM the
 initramfs occupies and removes the `/mnt/cfg` special case. Doing it here means
 phase 4 is a packaging exercise rather than a redesign.
 
-### Deferred storage design — read-only assets before a writable root
+### Storage design — resolved for now, still relevant later
 
-The current 11,456 KiB `system` partition has only about 28 KiB free in the
-working image. That is not enough to ship a second external monitor-mode Wi-Fi
-driver: the existing RTL8812AU module alone compresses to roughly 735 KiB. The
-BL-M8812EU2 needs its distinct `rtl8812eu` module, so supporting both adapters
-cannot remain a one-image initramfs-only design.
+**Superseded 2026-08-08.** Both adapters now ship in the one initramfs. Trimming
+the image (unused MI libraries, vendor boot media, unused BusyBox applets) freed
+about 944 KiB, and `8812eu.ko` costs 760 KiB compressed, so the `system`
+partition holds both drivers with roughly 184 KiB to spare. No extra partition
+was needed.
+
+The original reasoning is kept below because the headroom is now thin again, and
+the next bulky asset brings it straight back.
+
+> The current 11,456 KiB `system` partition has only about 28 KiB free in the
+> working image. That is not enough to ship a second external monitor-mode Wi-Fi
+> driver: the existing RTL8812AU module alone compresses to roughly 735 KiB. The
+> BL-M8812EU2 needs its distinct `rtl8812eu` module, so supporting both adapters
+> cannot remain a one-image initramfs-only design.
 
 Do not retrofit OpenIPC's writable squashfs-overlay root into this SDK just to
 solve that. The current root runs from RAM, so `sysupgrade` can safely erase and
@@ -268,13 +277,13 @@ rewrite its backing `system` partition. A flash-mounted root makes the running
 filesystem depend on the partitions being updated and requires a different,
 recovery-aware upgrade design.
 
-The deferred intermediate design is a separate read-only squashfs MTD partition
-mounted early (for example at `/opt/gs`) for bulky immutable assets: Wi-Fi
-modules, firmware, and optional tools. Keep the kernel, init, BusyBox, HDMI
-path, and updater in the RAM-root uImage; bind-mount or symlink the modules into
-`/lib/modules`. Keep persistent keys and settings in the existing JFFS2 `cfg`
-partition. This preserves the proven upgrade model while making multi-adapter
-firmware practical. Adopt a writable root overlay only with the Buildroot port.
+The intermediate design, if a third driver or any other bulky asset is wanted, is
+a separate read-only squashfs MTD partition mounted early (for example at
+`/opt/gs`) for immutable assets: Wi-Fi modules, firmware, and optional tools.
+Keep the kernel, init, BusyBox, HDMI path, and updater in the RAM-root uImage;
+bind-mount or symlink the modules into `/lib/modules`. Keep persistent keys and
+settings in the existing JFFS2 `cfg` partition. This preserves the proven upgrade
+model. Adopt a writable root overlay only with the Buildroot port.
 
 ### Phase 4 — the external tree
 
