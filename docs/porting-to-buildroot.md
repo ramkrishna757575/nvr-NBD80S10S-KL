@@ -1,13 +1,15 @@
 # Porting to the OpenIPC buildroot tree
 
-Notes for a possible move from `build-sdk.sh` to OpenIPC's buildroot external
-tree. Nothing here has been attempted — this is the research, written down so it
-does not have to be repeated.
+Research written down before the move from the vendor-SDK build to buildroot,
+kept because the reasoning still explains why the tree looks the way it does.
 
-**Status: not started.** Video now works end to end (wfb-ng, H.265, HDMI), so the
-original precondition is met. Read "What actually ports" below before starting:
-the part of OpenIPC's ground station that we would most want is the part that
-cannot come across.
+**Status: done.** `build-buildroot.sh` and `buildroot-ext/` produce the firmware
+running on the board — kernel, MI stack, wfb-ng, OSD and adaptive link — and the
+vendor-SDK build it replaced has been removed. What follows is the survey that
+preceded it, not a plan. Read "What actually ports" below for the conclusion
+that shaped the result: the part of OpenIPC's ground station that we would most
+want is the part that could not come across, so `buildroot-ext/` is our own
+external tree rather than a fork of theirs.
 
 ## There are two OpenIPC ground stations
 
