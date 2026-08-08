@@ -17,15 +17,10 @@ mkdir -p "$BUILD_DIR"
 # Pinned so a build is reproducible.
 SDK_REPO=https://github.com/wireless-tag-com/openwrt-ssd20x.git
 RTL_REPO=https://github.com/svpcom/rtl8812au.git
-# 8812EU is a different chip with its own driver, not a variant of the above.
-RTLEU_REPO=https://github.com/libc0607/rtl88x2eu-20230815.git
 # Pinned so an upstream change cannot break this build without someone choosing
 # it. Both are cloned at a fixed commit rather than a branch tip.
 SDK_REF=0462db78958d11cb937e662f56a93cdf30b92a59
 RTL_REF=20bcaf511f159bfd8f435f7117b82056fc453572
-# Tip of the v5.15.0.1 branch on 2026-08-08 -- that is the packet-injection
-# branch, and the repository carries no tags to pin to instead.
-RTLEU_REF=48e6e449e089fa954e4e15079bd864039e2960da
 TOOLCHAIN_URL=https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-2018.11-1.tar.bz2
 TOOLCHAIN_DIR=armv7-eabihf--glibc--stable-2018.11-1
 
@@ -69,16 +64,6 @@ else
     echo "=== RTL8812AU present ==="
 fi
 
-# ── RTL8812EU source ─────────────────────────────────────────────────────────
-# A separate chip from the 8812AU, sharing no driver with it. This is what the
-# BL-M8812EU2 needs.
-if [ ! -d "$BUILD_DIR/rtl8812eu" ]; then
-    echo "=== RTL8812EU driver source ==="
-    git clone --filter=blob:none --no-checkout "$RTLEU_REPO" "$BUILD_DIR/rtl8812eu"
-    git -C "$BUILD_DIR/rtl8812eu" checkout -q "$RTLEU_REF"
-else
-    echo "=== RTL8812EU present ==="
-fi
 
 # ── Vendor blobs, extracted from a stock flash dump ──────────────────────────
 # The XiongMai modules, /config panel timing tables and libraries are not
