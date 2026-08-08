@@ -1,1 +1,1 @@
-# Package Config.in files get sourced here as they are added.
+source "$BR2_EXTERNAL_SSR621Q_FPV_PATH/package/sigmastar-mi/Config.in"

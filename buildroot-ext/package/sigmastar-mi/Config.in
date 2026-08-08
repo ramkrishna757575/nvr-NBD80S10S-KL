@@ -1,0 +1,7 @@
+config BR2_PACKAGE_SIGMASTAR_MI
+	bool "sigmastar-mi"
+	help
+	  SigmaStar MI multimedia stack: the kernel modules, the userspace
+	  libraries mi-player links, and the /config tree mi_sys reads at
+	  init. Prebuilt binaries, taken from the vendor SDK and from a
+	  dump of this board's own flash. Nothing here is built from source.
