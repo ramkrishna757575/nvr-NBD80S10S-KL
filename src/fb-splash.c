@@ -387,6 +387,99 @@ static int stats_loop(const char *iface)
     return 0;
 }
 
+/* ---- link overlay, drawn over live video -------------------------------- */
+
+/*
+ * Zero, not a colour: an all-zero ARGB1555 pixel has alpha 0, so the video
+ * plane below shows through. The stats block above can paint a background
+ * because it only ever runs with the video plane idle; this one cannot, or it
+ * would black out the picture it is annotating.
+ */
+static void clear_transparent(int x, int y, int w, int h)
+{
+    int i, j;
+
+    for (j = 0; j < h; j++)
+        for (i = 0; i < w; i++)
+            put_pixel(x + i, y + j, 0);
+}
+
+/* One line, rewritten in place by wfb-start's awk:
+   freq mcs bw rssi snr pkt kbps fec lost decerr ants */
+#define WFB_STATUS "/tmp/wfb.status"
+#define WFB_FIELDS 11
+
+static int read_fields(const char *path, char out[][16], int max)
+{
+    FILE *f;
+    char line[192], *tok;
+    int n = 0;
+
+    f = fopen(path, "r");
+    if (!f)
+        return 0;
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+
+    for (tok = strtok(line, " \t\r\n"); tok && n < max; tok = strtok(NULL, " \t\r\n"))
+        snprintf(out[n++], 16, "%s", tok);
+
+    return n;
+}
+
+static int wfb_loop(void)
+{
+    int scale, line_h, x0, y0, strip_w, strip_h;
+
+    scale = (int)vinfo.xres / 320;
+    if (scale < 2)
+        scale = 2;
+    line_h  = 9 * scale;
+    x0      = 20;
+    strip_h = line_h * 2 + scale;
+    strip_w = (int)vinfo.xres - x0;
+    /* Bottom left: the top of the frame is where the picture usually matters. */
+    y0      = (int)vinfo.yres - strip_h - 16;
+    if (y0 < 0)
+        y0 = 0;
+
+    for (;;) {
+        char f[WFB_FIELDS][16], buf[96];
+        unsigned long white = pack(255, 255, 255);
+        unsigned long green = pack(0, 255, 0);
+        unsigned long amber = pack(255, 200, 0);
+        unsigned long red   = pack(255, 80, 80);
+        int n = read_fields(WFB_STATUS, f, WFB_FIELDS);
+        int y = y0;
+
+        clear_transparent(x0, y0, strip_w, strip_h);
+
+        /* rssi is "-" until a packet actually decrypts, so it doubles as the
+           "is this link real" test -- the same one wfb-start keys the player on. */
+        if (n < WFB_FIELDS || strcmp(f[3], "-") == 0) {
+            draw_text(x0, y, "NO LINK", scale, red);
+        } else {
+            int rssi = atoi(f[3]);
+            int lost = atoi(f[8]);
+
+            snprintf(buf, sizeof(buf), "%sDBM SNR %s MCS%s", f[3], f[4], f[1]);
+            draw_text(x0, y, buf, scale,
+                      rssi > -70 ? green : (rssi > -80 ? amber : red));
+            y += line_h;
+
+            snprintf(buf, sizeof(buf), "%s KBPS FEC %s LOST %s", f[6], f[7], f[8]);
+            draw_text(x0, y, buf, scale, lost > 0 ? red : white);
+        }
+
+        sleep(1);
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *dev = "/dev/fb0";
@@ -429,6 +522,11 @@ int main(int argc, char **argv)
         argv++;
         argc--;
     }
+
+    /* Overlay on top of running video. Deliberately does not clear the screen:
+       everything outside the glyphs has to stay transparent. */
+    if (argc > 1 && strcmp(argv[1], "--wfb") == 0)
+        return wfb_loop();
 
     /* Live counters, refreshed once a second, until killed. */
     if (argc > 1 && strcmp(argv[1], "--stats") == 0) {

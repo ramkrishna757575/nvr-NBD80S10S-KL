@@ -925,6 +925,7 @@ ALINK_TX_PORT=$(get alink_tx_port); [ -n "$ALINK_TX_PORT" ] || ALINK_TX_PORT=580
 ALINK_RX_PORT=$(get alink_rx_port); [ -n "$ALINK_RX_PORT" ] || ALINK_RX_PORT=5801
 ALINK_TX_RADIO_PORT=$(get alink_tx_radio_port); [ -n "$ALINK_TX_RADIO_PORT" ] || ALINK_TX_RADIO_PORT=160
 ALINK_RX_RADIO_PORT=$(get alink_rx_radio_port); [ -n "$ALINK_RX_RADIO_PORT" ] || ALINK_RX_RADIO_PORT=32
+OSD=$(get osd);             [ -n "$OSD" ]        || OSD=1
 
 [ -d /sys/class/net/$IFACE ] || load-wifi || exit 1
 
@@ -1049,6 +1050,11 @@ splash() {
             down=0
             if [ ! -f /tmp/fpv.pid ] || ! kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null; then
                 fpv-start udp
+                # After fpv-start, never before: it clears the OSD layer to get
+                # the splash off the screen, which would take the overlay too.
+                if [ "$OSD" = "1" ] && [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
+                    fb-splash --wfb >/dev/null 2>&1 &
+                fi
             fi
         else
             # A second without decrypts is normal between keyframes; only give up
@@ -1649,6 +1655,10 @@ alink_tx_port = 5800
 alink_rx_port = 5801
 alink_tx_radio_port = 160
 alink_rx_radio_port = 32
+
+# On-screen link stats over the video: rssi, snr, MCS, bitrate, FEC and losses.
+# Only the glyphs are drawn, so the picture shows through around them.
+osd = 1
 
 # --- apfpv mode only ---
 ssid = OpenIPC
