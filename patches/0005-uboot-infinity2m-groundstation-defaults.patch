@@ -1,0 +1,28 @@
+diff --git a/include/configs/infinity2m.h b/include/configs/infinity2m.h
+index 18cca5f..2ad1884 100644
+--- a/include/configs/infinity2m.h
++++ b/include/configs/infinity2m.h
+@@ -418,5 +418,20 @@
+ 
+ /* SENSOR */
+ #define CONFIG_MS_SRCFG
+ #include <configs/sstar-common.h>
++
++/* Boot the groundstation image even if the saved environment is invalid. */
++#undef CONFIG_ENV_KERNSIZE
++#define CONFIG_ENV_KERNSIZE 0xb30000
++#undef CONFIG_BOOTARGS
++#define CONFIG_BOOTARGS "console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:192k@0x10000(uboot)ro,64k@0x40000(env)ro,11456k@0x50000(system),512k@0xf80000(cfg) ethaddr=${ethaddr} wifi_cc=IN mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080"
++#undef CONFIG_BOOTCOMMAND
++#define CONFIG_BOOTCOMMAND "run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x50000 0xb30000;bootm 0x21000000"
++#undef CONFIG_EXTRA_ENV_SETTINGS
++#define CONFIG_EXTRA_ENV_SETTINGS \
++	"baseaddr=0x21000000\0" \
++	"kernaddr=0x50000\0" \
++	"kernsize=0xb30000\0" \
++	"setargs=setenv bootargs " CONFIG_BOOTARGS "\0"
++
+ #endif	/* __CONFIG_H */
+
+-- 
+2.39.2

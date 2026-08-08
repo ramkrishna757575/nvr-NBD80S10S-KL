@@ -462,7 +462,10 @@ openssl pkeyutl -sign -rawin -inkey ~/.config/nvr-signing/signing.key \
 `build-sdk.sh` and `sysupgrade` never write it. It builds the patched
 Infinity2M source with the bundled ARM 8.2 toolchain, omitting vendor display
 and SD/MMC boot UI drivers that do not build for this SoC and are not needed to
-load the Linux image from SPI NOR.
+load the Linux image from SPI NOR. Its compiled fallback environment is the
+groundstation boot path: GPIO 25 enabled, the 11.2 MiB image read from
+`0x50000`, and the same persistent `cfg` and protected U-Boot partitions. It
+therefore boots the groundstation even if the saved environment is blank.
 
 ```bash
 ./build-uboot.sh

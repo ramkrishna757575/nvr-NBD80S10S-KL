@@ -7,7 +7,10 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BUILD_DIR="$SCRIPT_DIR/build"
 SOURCE_DIR="$BUILD_DIR/uboot-src"
 OUTPUT_DIR="$SCRIPT_DIR/output/uboot"
-PATCH="$SCRIPT_DIR/patches/0004-uboot-sigmastar-build-for-infinity2m.patch"
+PATCHES=(
+    "$SCRIPT_DIR/patches/0004-uboot-sigmastar-build-for-infinity2m.patch"
+    "$SCRIPT_DIR/patches/0005-uboot-infinity2m-groundstation-defaults.patch"
+)
 TOOLCHAIN_DIR="$BUILD_DIR/toolchain/gcc-arm-8.2-2018.08-x86_64-arm-linux-gnueabihf"
 CROSS_COMPILE=arm-linux-gnueabihf-
 JOBS=${JOBS:-$(nproc)}
@@ -21,16 +24,21 @@ die() {
 [ -d "$SOURCE_DIR" ] || die "missing $SOURCE_DIR; run fetch-deps.sh first"
 [ -x "$TOOLCHAIN_DIR/bin/${CROSS_COMPILE}gcc" ] || \
     die "missing ARM GCC in $TOOLCHAIN_DIR"
-[ -f "$PATCH" ] || die "missing $PATCH"
+for patch in "${PATCHES[@]}"; do
+    [ -f "$patch" ] || die "missing $patch"
+done
 
 export PATH="$TOOLCHAIN_DIR/bin:$PATH"
 export ARCH=arm
 export CROSS_COMPILE
 
-if ! grep -q '#include <configs/sstar-common.h>' "$SOURCE_DIR/include/configs/infinity2m.h"; then
-    echo "=== Applying Infinity2M port patch ==="
-    patch -d "$SOURCE_DIR" -p1 < "$PATCH"
-fi
+for patch in "${PATCHES[@]}"; do
+    if patch -R -d "$SOURCE_DIR" -p1 --dry-run < "$patch" >/dev/null 2>&1; then
+        continue
+    fi
+    echo "=== Applying $(basename "$patch") ==="
+    patch -d "$SOURCE_DIR" -p1 < "$patch"
+done
 
 echo "=== Building U-Boot for Infinity2M ==="
 make -C "$SOURCE_DIR" distclean
@@ -42,6 +50,7 @@ sed -i \
     -e 's/^CONFIG_SSTAR_PNL=y$/# CONFIG_SSTAR_PNL is not set/' \
     -e 's/^CONFIG_SSTAR_JPD=y$/# CONFIG_SSTAR_JPD is not set/' \
     -e 's/^CONFIG_MS_SDMMC=y$/# CONFIG_MS_SDMMC is not set/' \
+    -e 's/^CONFIG_BOOTDELAY=0$/CONFIG_BOOTDELAY=3/' \
     "$SOURCE_DIR/.config"
 make -C "$SOURCE_DIR" -j"$JOBS"
 ( cd "$SOURCE_DIR" && ./create_img.sh )
