@@ -96,8 +96,8 @@ Useful variables:
 
 `validate` cross-compiles every source file for ARM against MI headers
 sparse-checked-out from the public SDK repository, and syntax-checks the shell
-scripts — including the ones generated into the initramfs, which are extracted
-and checked under both `dash` and `busybox sh`.
+scripts — including every script in the rootfs overlay, which is checked under
+both `dash` and `busybox sh` because that is what runs them on the board.
 
 `firmware` builds a complete flashable image and publishes it to the `latest`
 release, on every push to `master` and on demand. It runs the vendor blobs from

@@ -1,5 +1,5 @@
 # Applied on top of the vendor infinity2m_ssc010a_s01a_defconfig.
-# Mirrors the scripts/config calls in build-sdk.sh.
+# Mirrors the scripts/config calls the vendor-SDK build used to make.
 
 # USB, for the Wi-Fi adapter and mass storage.
 CONFIG_USB=y

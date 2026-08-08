@@ -100,10 +100,15 @@ rm -f $BR_OUT/build/linux-custom/.stamp_rsynced
 make -C $BR_OUT -j$JOBS
 
 # post-image.sh has already validated and signed these; copy them out under the
-# stable names the flashing instructions and CI refer to.
+# stable names the flashing instructions and CI refer to. The signature is only
+# there if a key was available, which in CI it is not -- that step signs later.
 mkdir -p $SCRIPT_DIR/output
-cp $BR_OUT/images/uImage     $SCRIPT_DIR/output/uImage
-cp $BR_OUT/images/uImage.sig $SCRIPT_DIR/output/uImage.sig
+cp $BR_OUT/images/uImage $SCRIPT_DIR/output/uImage
+if [ -f $BR_OUT/images/uImage.sig ]; then
+    cp $BR_OUT/images/uImage.sig $SCRIPT_DIR/output/uImage.sig
+else
+    rm -f $SCRIPT_DIR/output/uImage.sig
+fi
 
 echo
 echo "images:"

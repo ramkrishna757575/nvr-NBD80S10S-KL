@@ -16,7 +16,7 @@ BR2_ARM_FPU_VFPV3D16=y
 BR2_ARM_EABIHF=y
 
 # ── Toolchain ────────────────────────────────────────────────────────────────
-# Deliberately the same Bootlin 2018.11 toolchain build-sdk.sh already uses:
+# Deliberately the same Bootlin 2018.11 toolchain the vendor SDK is built with:
 # gcc 7.3.0, glibc 2.27, 4.1 kernel headers. The MI blobs are prebuilt against
 # that glibc, and gcc 7.3 is the compiler this vendor kernel is known to build
 # with, so reusing it keeps the port from changing two things at once.
@@ -40,7 +40,7 @@ BR2_TARGET_GENERIC_HOSTNAME="nvr-gs"
 BR2_TARGET_GENERIC_ISSUE="SSR621Q ground station"
 BR2_TARGET_GENERIC_GETTY_PORT="ttyS0"
 BR2_TARGET_GENERIC_GETTY_BAUDRATE_115200=y
-# The OpenIPC-style well-known password, same as build-sdk.sh and the air unit,
+# The OpenIPC-style well-known password, same as the air unit,
 # so the board is usable out of the box. Documented rather than hidden: anyone
 # with the image can read the hash, so treat the wired side as trusted-LAN-only.
 # Without this dropbear refuses every login, because it rejects empty passwords.
@@ -94,7 +94,6 @@ BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/board/s
 # produces arch/arm/boot/uImage as a by-product, wrapping the raw Image with the
 # bundled scripts/mkimage and appending the built-in DTB. Asking for uImage
 # instead runs the stock rule, which wraps zImage and wants a LOADADDR.
-# See the same reasoning in build-sdk.sh.
 BR2_LINUX_KERNEL_IMAGE_TARGET_CUSTOM=y
 BR2_LINUX_KERNEL_IMAGE_TARGET_NAME="zImage"
 BR2_LINUX_KERNEL_IMAGE_NAME="uImage"

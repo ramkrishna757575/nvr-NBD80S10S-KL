@@ -3,7 +3,8 @@
 # gs-tools
 #
 # The ground station's own programs, built from src/ in this repository.
-# Compile lines follow build-sdk.sh; the notes there explain the ones that are
+# Compile lines carried over from the vendor-SDK build; the notes below explain
+# the ones that are
 # not obvious, and the important ones are repeated here.
 #
 ################################################################################

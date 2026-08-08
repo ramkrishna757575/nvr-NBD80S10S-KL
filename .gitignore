@@ -4,6 +4,7 @@
 # All of it is reproducible from fetch-deps.sh, and it runs to several GB.
 build/
 output/
+dl-cache/
 logs/
 
 # ── Legacy linux-chenxing 6.5 track ──────────────────────────────────────────

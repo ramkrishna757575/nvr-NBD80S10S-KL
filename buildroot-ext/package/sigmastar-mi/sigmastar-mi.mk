@@ -3,7 +3,7 @@
 # sigmastar-mi
 #
 # Prebuilt vendor blobs, so there is no source to download or build -- only an
-# install step. The layout mirrors what build-sdk.sh stages, because that is the
+# install step. The layout mirrors the stock firmware's, because that is the
 # combination known to decode video and drive HDMI on this board.
 #
 ################################################################################

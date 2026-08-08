@@ -3,8 +3,8 @@
 # rtl8812au
 #
 # The driver's own Makefile drives the kernel build through KSRC rather than the
-# usual -C $(LINUX_DIR) M=..., so this is a generic-package that calls it the way
-# build-sdk.sh does rather than a kernel-module one.
+# usual -C $(LINUX_DIR) M=..., so this is a generic-package that calls it that
+# way rather than a kernel-module one.
 #
 ################################################################################
 

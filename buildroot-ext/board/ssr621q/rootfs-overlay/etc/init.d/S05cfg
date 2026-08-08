@@ -18,7 +18,8 @@ mount_cfg() {
 	n=${m#mtd}
 	mount -t jffs2 /dev/mtdblock$n $CFG_DIR 2>/dev/null && return 0
 	# An erased NOR partition is not a filesystem yet. mtd-utils dropped
-	# flash_eraseall, so this uses flash_erase where build-sdk.sh did not.
+	# flash_eraseall, so this uses flash_erase where the vendor-SDK image
+	# did not.
 	echo "cfg: formatting /dev/$m (first boot, takes a moment)"
 	flash_erase -j /dev/$m 0 0 >/dev/null 2>&1
 	mount -t jffs2 /dev/mtdblock$n $CFG_DIR 2>/dev/null

@@ -16,14 +16,14 @@ concurrency:
 # Two jobs.
 #
 # 'validate' cross-compiles every source file for ARM against the public
-# SigmaStar headers and syntax-checks every script, including the ones generated
-# into the initramfs.
+# SigmaStar headers and syntax-checks every script, including the ones that only
+# ever run on the board.
 #
-# 'firmware' builds a flashable image and uploads it as a run artifact. It runs
-# on every push to master and on manual dispatch, but not on pull requests. The
-# proprietary XiongMai modules and /config tables it needs are committed under
-# vendor/, the same approach OpenIPC takes with its SigmaStar blobs, so no dump
-# and no secret is required.
+# 'firmware' builds a flashable image with buildroot and uploads it as a run
+# artifact. It runs on every push to master and on manual dispatch, but not on
+# pull requests. The proprietary XiongMai modules and /config tables it needs
+# are committed under vendor/, the same approach OpenIPC takes with its
+# SigmaStar blobs, so no dump and no secret is required.
 #
 # Publishing the image is safe from a secrets point of view: host keys are
 # generated on the board's first boot and kept in flash, so no private key is
@@ -72,20 +72,17 @@ jobs:
           done
           exit $fail
 
-      # bash -n treats a heredoc as data, so the init script and the ten helper
-      # scripts it writes are never checked by the step above -- yet they are
-      # the ones that can only fail on the board, where there is no shell to
-      # debug them from. Extract and check them as BusyBox ash would see them.
-      - name: Generated on-target scripts
+      # These run on the board under BusyBox ash, where there is no shell to
+      # debug them from, so check them the way the target will read them rather
+      # than the way bash would.
+      - name: On-target scripts
         run: |
-          awk '/^cat > \$INITRAMFS_DIR\/init << .EOF.$/{f=1;next} f && /^EOF$/{exit} f' \
-            build-sdk.sh > init.sh
-          test -s init.sh || { echo "could not extract the init heredoc"; exit 1; }
-          awk "/<< 'INNER'\$/{n++;out=\"inner-\" n \".sh\";f=1;next} \
-               f&&/^INNER\$/{f=0;next} f{print > out}" init.sh
+          set -e
+          list=$(grep -rl '^#!/bin/sh' buildroot-ext/board | sort)
+          test -n "$list" || { echo "no target scripts found"; exit 1; }
           fail=0
-          for s in init.sh inner-*.sh; do
-            printf '%-16s ' "$s"
+          for s in $list; do
+            printf '%-56s ' "${s#buildroot-ext/board/ssr621q/}"
             if dash -n "$s" && busybox sh -n "$s"; then echo OK; else echo FAIL; fail=1; fi
           done
           exit $fail
@@ -95,8 +92,8 @@ jobs:
           INC=sdk/18.06/package/sigmastar/sstar-mpp/files/glibc/include
           test -f "$INC/mi_sys.h" || { echo "MI headers not found in $INC"; exit 1; }
           mkdir -p obj
-          # verify-sig.c includes both of these; build-sdk.sh generates the
-          # second one from the committed public key.
+          # verify-sig.c includes both of these; the gs-tools package generates
+          # the second one from the committed public key.
           python3 -c "import sys; print(','.join('0x%02x' % b for b in open(sys.argv[1],'rb').read()))" \
             signing-key.pub > obj/signing-pubkey.h
           fail=0
@@ -130,47 +127,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A buildroot tree plus the SigmaStar SDK clone runs to tens of GB, which
+      # is more than a stock runner has spare.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          df -h /
+
+      # buildroot builds its own host tools, so this is only what it needs to
+      # bootstrap: no cross compiler, the Bootlin toolchain is fetched below.
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            gcc-arm-linux-gnueabihf binutils-arm-linux-gnueabihf \
-            libc6-dev-armhf-cross \
             build-essential bc bison flex libssl-dev u-boot-tools \
-            cpio xz-utils lzop squashfs-tools device-tree-compiler \
-            rsync wget openssl pkg-config
+            cpio xz-utils lzop unzip rsync wget openssl pkg-config \
+            file python3 perl gawk bzip2 git
+
+      # Buildroot's downloads are the slow and flaky part of a cold build, and
+      # every one of them is pinned, so caching them changes nothing but time.
+      # Kept out of build/ so restoring it cannot make the buildroot clone look
+      # like it has already happened.
+      - name: Cache buildroot downloads
+        uses: actions/cache@v4
+        with:
+          path: dl-cache
+          key: br-dl-${{ hashFiles('buildroot-ext/**/*.mk', 'build-buildroot.sh') }}
+          restore-keys: br-dl-
 
       # No flash dump needed: the blobs live in vendor/.
       - name: Fetch dependencies
         run: ./fetch-deps.sh
 
-      # Each of these is staged by build-sdk.sh only if already built, so
-      # skipping one silently produces an image missing that feature: no SSH
-      # without dropbear, and no drone link at all without apfpv's
-      # wpa_supplicant.
-      - name: Build dropbear
-        run: ./build-dropbear.sh
-
-      - name: Build apfpv
-        run: ./build-apfpv.sh
-
-      - name: Build wfb-ng
-        run: ./build-wfb.sh
-
       - name: Build the image
-        run: ./build-sdk.sh
+        env:
+          BR2_DL_DIR: ${{ github.workspace }}/dl-cache
+        run: ./build-buildroot.sh
 
       - name: Package
         id: pkg
         run: |
           mkdir -p dist
-          cp output/uImage-sdk dist/uImage-sdk
-          (cd dist && sha256sum uImage-sdk > SHA256SUMS)
+          cp output/uImage dist/uImage
+          (cd dist && sha256sum uImage > SHA256SUMS)
           {
             echo "commit=$GITHUB_SHA"
             echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "size=$(stat -c%s dist/uImage-sdk)"
-            echo "md5=$(md5sum dist/uImage-sdk | cut -d' ' -f1)"
+            echo "size=$(stat -c%s dist/uImage)"
+            echo "md5=$(md5sum dist/uImage | cut -d' ' -f1)"
           } > dist/BUILDINFO
           cat dist/BUILDINFO
           echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
@@ -196,28 +202,29 @@ jobs:
           fi
           printf '%s' "$SIGNING_KEY" > /tmp/signing.key
           chmod 600 /tmp/signing.key
-          sha256sum dist/uImage-sdk | cut -c1-64 | tr -d '\n' | xxd -r -p > /tmp/digest.bin
+          sha256sum dist/uImage | cut -c1-64 | tr -d '\n' | xxd -r -p > /tmp/digest.bin
           [ "$(stat -c%s /tmp/digest.bin)" = "32" ]
           openssl pkeyutl -sign -rawin -inkey /tmp/signing.key \
-            -in /tmp/digest.bin -out dist/uImage-sdk.sig
+            -in /tmp/digest.bin -out dist/uImage.sig
           shred -u /tmp/signing.key
-          [ "$(stat -c%s dist/uImage-sdk.sig)" = "64" ]
+          [ "$(stat -c%s dist/uImage.sig)" = "64" ]
           # Verify against the committed public key so a mismatched secret fails
           # here rather than on a board that can no longer be updated remotely.
           openssl pkey -pubin -inform DER -outform DER \
             -in <(printf '\x30\x2a\x30\x05\x06\x03\x2b\x65\x70\x03\x21\x00'; cat signing-key.pub) \
             -pubout > /tmp/pub.der
           openssl pkeyutl -verify -rawin -pubin -inkey /tmp/pub.der -keyform DER \
-            -in /tmp/digest.bin -sigfile dist/uImage-sdk.sig
+            -in /tmp/digest.bin -sigfile dist/uImage.sig
           echo "signed=true" >> "$GITHUB_OUTPUT"
 
       # No private key ships in the image -- host keys are generated on the
       # board's first boot -- so this is safe to publish. Root's password is the
-      # documented default; change it with ROOT_PASSWORD when building your own.
+      # documented default, set by BR2_TARGET_GENERIC_ROOT_PASSWD in the
+      # defconfig; change it there when building your own.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: uImage-sdk-${{ steps.pkg.outputs.short }}
+          name: uImage-${{ steps.pkg.outputs.short }}
           path: dist/
           retention-days: 30
 
@@ -234,15 +241,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          gh release create latest dist/uImage-sdk dist/SHA256SUMS dist/BUILDINFO \
-            $([ -f dist/uImage-sdk.sig ] && echo dist/uImage-sdk.sig) \
+          gh release create latest dist/uImage dist/SHA256SUMS dist/BUILDINFO \
+            $([ -f dist/uImage.sig ] && echo dist/uImage.sig) \
             --title "latest (${{ steps.pkg.outputs.short }})" \
             --notes "Build of ${GITHUB_SHA}.
 
           Update an already-running board over SSH:
 
-              sysupgrade https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/uImage-sdk
+              sysupgrade https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/uImage
 
           Settings in /mnt/cfg are preserved. First-time flashing still needs
           TFTP from U-Boot -- see the README."
-          echo "https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/uImage-sdk"
+          echo "https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/uImage"
