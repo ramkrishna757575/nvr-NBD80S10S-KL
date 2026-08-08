@@ -2338,8 +2338,19 @@ echo "initramfs: $(du -sh $INITRAMFS_DIR | cut -f1) after stripping"
 
 # Embed the initramfs so the board can boot entirely over TFTP, with no flash
 # writes and no dependency on the stock partition layout.
+#
+# XZ rather than gzip, and the other decompressors off. usr/Makefile picks the
+# suffix from whichever CONFIG_RD_* is set, so leaving several enabled is how
+# this ended up gzip. On this rootfs that is 7,363,969 bytes as gzip against
+# 4,635,420 as xz -- 2.7MB back on a partition that had 188KB spare. The cost is
+# decompression time at boot, paid once by the A7.
 ./scripts/config --enable BLK_DEV_INITRD \
-                 --enable RD_GZIP \
+                 --enable RD_XZ \
+                 --disable RD_GZIP \
+                 --disable RD_BZIP2 \
+                 --disable RD_LZMA \
+                 --disable RD_LZO \
+                 --disable RD_LZ4 \
                  --set-str INITRAMFS_SOURCE "$INITRAMFS_DIR $INITRAMFS_NODES" \
                  --set-val INITRAMFS_ROOT_UID 0 \
                  --set-val INITRAMFS_ROOT_GID 0
