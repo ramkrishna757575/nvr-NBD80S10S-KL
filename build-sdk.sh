@@ -2488,9 +2488,8 @@ echo "wifi: built 88XXau_wfb.ko ($(stat -c%s $INITRAMFS_DIR/lib/modules/wifi/88X
 # one, and KSRC/CROSS_COMPILE on the command line override what it sets.
 RTLEU_DIR=$BUILD_DIR/rtl8812eu
 if [ -d $RTLEU_DIR ]; then
-    sed -i -e 's/^CONFIG_PLATFORM_I386_PC = y/CONFIG_PLATFORM_I386_PC = n/' \
-           -e 's/^CONFIG_PLATFORM_ARM_RPI = n/CONFIG_PLATFORM_ARM_RPI = y/' \
-        $RTLEU_DIR/Makefile
+    grep -q '^CONFIG_PLATFORM_ARM_RPI = y' $RTLEU_DIR/Makefile ||
+        patch -p1 -d $RTLEU_DIR < $SCRIPT_DIR/patches/0006-rtl8812eu-arm-platform.patch
     make -C $RTLEU_DIR -j$JOBS ARCH=arm CROSS_COMPILE=$CROSS_COMPILE KSRC=$KERNEL_DIR
 
     RTLEU_KO=$RTLEU_DIR/8812eu.ko
