@@ -1,0 +1,78 @@
+#!/bin/sh
+# Start the player the moment the link is actually usable. This is called from
+# the DHCP bound/renew handler, so it runs on a real event instead of after a
+# guessed delay -- association plus lease can take anywhere from 5 to 60s
+# depending on when the air unit is powered on.
+# usage: fpv-start [gateway | udp]
+# "udp" is the wfb-ng path: wfb_rx has already put a decoded stream on a local
+# UDP port, so there is no RTSP session to negotiate and no config file to wait
+# for. Everything downstream -- OSD clearing, retry loop -- is shared.
+if [ "$1" = "udp" ]; then
+    [ -f /tmp/fpv.conf ] && . /tmp/fpv.conf
+    URL="udp:$(cat /tmp/wfb.port 2>/dev/null || echo 5600)"
+    # There is no SDP on this path, so nothing announces the format: mi-player
+    # would assume H.264 at 1280x720 and decode nothing, which reaches HDMI as a
+    # green screen rather than an error. Take both from the config instead.
+    wfb_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
+    CODEC=$(wfb_get codec);      [ -n "$CODEC" ] || CODEC=h265
+    [ "$CODEC" = "h265" ] && FPV_OPTS="$FPV_OPTS -h265"
+    FPV_SRC=$(wfb_get video_size)
+    [ -n "$FPV_SRC" ] || FPV_SRC=1920x1080
+else
+    [ -f /tmp/fpv.conf ] || exit 0
+    . /tmp/fpv.conf
+    [ -n "$FPV_URL" ] || exit 0
+
+    GW=${1:-$(cat /tmp/apfpv-gw 2>/dev/null)}
+    URL=$FPV_URL
+fi
+if [ "$URL" = "auto" ]; then
+    # On an AP-mode air unit the gateway IS the camera, so there is nothing to
+    # hardcode: whatever handed us the lease is what we stream from.
+    if [ -z "$GW" ]; then
+        echo "fpv: no gateway in the lease, cannot build an RTSP URL" > /dev/console
+        exit 1
+    fi
+    URL="rtsp://${FPV_USER:-root}:${FPV_PASS:-12345}@$GW:554/stream=0"
+fi
+
+# Already streaming this URL? Do nothing. udhcpc fires the same bound/renew
+# handler on every lease renewal -- and the air unit hands out a short lease --
+# so restarting here would tear down and rebuild the whole MI pipeline every
+# few seconds, blanking HDMI each time.
+if [ -f /tmp/fpv.pid ] && kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null &&
+   [ "$(cat /tmp/fpv.url 2>/dev/null)" = "$URL" ]; then
+    exit 0
+fi
+
+# Never leave two supervisors running: kill the old one before its child, so it
+# cannot restart the player we are about to replace.
+if [ -f /tmp/fpv.pid ]; then
+    kill "$(cat /tmp/fpv.pid)" 2>/dev/null
+    rm -f /tmp/fpv.pid
+fi
+killall mi-player mi-player-alkaid 2>/dev/null
+sleep 1
+
+# The OSD layer sits above the video plane at constant alpha 255, so the splash
+# would simply hide the picture. Zero it -- an all-zero ARGB1555 pixel has
+# alpha 0, i.e. transparent. mi-disp-init has to go too: it holds /dev/mi_hdmi
+# open, and the player brings HDMI up itself.
+killall mi-disp-init fb-splash 2>/dev/null
+[ -e /dev/fb0 ] && dd if=/dev/zero of=/dev/fb0 bs=64k 2>/dev/null
+
+echo "fpv: link up, streaming $URL" > /dev/console
+(
+    while :; do
+        case "$URL" in
+            udp:*) ${FPV_PLAYER:-mi-player} -u "${URL#udp:}" -s "${FPV_SRC:-1280x720}" $FPV_OPTS ;;
+            *)     ${FPV_PLAYER:-mi-player} -r "$URL" -s "${FPV_SRC:-1280x720}" $FPV_OPTS ;;
+        esac
+        # The air unit may still be booting, or may have rebooted mid-flight.
+        echo "fpv: player exited, retrying in 3s" > /dev/console
+        sleep 3
+    done
+) > /dev/console 2>&1 &
+echo $! > /tmp/fpv.pid
+echo "$URL" > /tmp/fpv.url
+exit 0

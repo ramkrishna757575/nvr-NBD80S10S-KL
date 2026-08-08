@@ -1,0 +1,173 @@
+#!/bin/sh
+CONF=${1:-/etc/wfb.conf}
+IFACE=${IFACE:-wlan0}
+get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" $CONF 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
+
+CHANNEL=$(get channel);     [ -n "$CHANNEL" ]    || CHANNEL=165
+LINK_ID=$(get link_id);     [ -n "$LINK_ID" ]    || LINK_ID=7669206
+RADIO_PORT=$(get radio_port); [ -n "$RADIO_PORT" ] || RADIO_PORT=0
+UDP_PORT=$(get udp_port);   [ -n "$UDP_PORT" ]   || UDP_PORT=5600
+KEY=$(get key);             [ -n "$KEY" ]        || KEY=/mnt/cfg/wfb/gs.key
+ALINK=$(get alink);         [ -n "$ALINK" ]      || ALINK=0
+ALINK_IP=$(get alink_ip);   [ -n "$ALINK_IP" ]   || ALINK_IP=10.5.0.10
+ALINK_PORT=$(get alink_port); [ -n "$ALINK_PORT" ] || ALINK_PORT=9999
+ALINK_TUN_NAME=$(get alink_tun_name); [ -n "$ALINK_TUN_NAME" ] || ALINK_TUN_NAME=wfb-gs
+ALINK_TUN_ADDR=$(get alink_tun_addr); [ -n "$ALINK_TUN_ADDR" ] || ALINK_TUN_ADDR=10.5.0.1/24
+ALINK_TX_PORT=$(get alink_tx_port); [ -n "$ALINK_TX_PORT" ] || ALINK_TX_PORT=5800
+ALINK_RX_PORT=$(get alink_rx_port); [ -n "$ALINK_RX_PORT" ] || ALINK_RX_PORT=5801
+ALINK_TX_RADIO_PORT=$(get alink_tx_radio_port); [ -n "$ALINK_TX_RADIO_PORT" ] || ALINK_TX_RADIO_PORT=160
+ALINK_RX_RADIO_PORT=$(get alink_rx_radio_port); [ -n "$ALINK_RX_RADIO_PORT" ] || ALINK_RX_RADIO_PORT=32
+OSD=$(get osd);             [ -n "$OSD" ]        || OSD=1
+
+[ -d /sys/class/net/$IFACE ] || load-wifi || exit 1
+
+# apfpv and wfb cannot share the adapter: one wants managed mode, the other
+# monitor. Stop anything holding it.
+killall wpa_supplicant 2>/dev/null
+[ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
+sleep 1
+
+if [ ! -f "$KEY" ]; then
+    mkdir -p "$(dirname "$KEY")"
+    echo "wfb: no key at $KEY, generating a pair"
+    ( cd "$(dirname "$KEY")" && wfb_keygen ) || exit 1
+    # wfb_keygen writes gs.key and drone.key in the current directory.
+    echo "wfb: copy $(dirname "$KEY")/drone.key to the air unit as /etc/drone.key"
+fi
+
+# Monitor mode via wireless extensions -- the driver implements IW_MODE_MONITOR
+# itself, so no iw or libnl is needed. Order matters: down, mode, up, channel.
+# Third argument is the sniff duration; 0 means set the mode and return.
+wifi-monitor $IFACE $CHANNEL 0 || {
+    echo "wfb: could not put $IFACE into monitor mode on channel $CHANNEL"
+    exit 1
+}
+echo "wfb: $IFACE monitor, channel $CHANNEL, link_id $LINK_ID, port $RADIO_PORT"
+
+echo "$UDP_PORT" > /tmp/wfb.port
+# wfb_rx checks /dev/random and libsodium wants entropy, so this can pause on a
+# cold boot exactly as dropbearkey does.
+#
+# Its stdout carries a link report every second, which awk reduces to the current
+# values for wfb-cli to read. Rewritten in place rather than appended: /tmp is
+# capped at 8m and a stats log would fill it inside a day.
+wfb_rx -K "$KEY" -c 127.0.0.1 -u "$UDP_PORT" -p "$RADIO_PORT" -i "$LINK_ID" $IFACE | awk -F'\t' '
+BEGIN { rssi="-"; snr="-"; freq="-"; mcs="-"; bw="-"; ants=0 }
+# One line per antenna. Report the strongest, which is what a pilot steers by.
+$2 == "RX_ANT" {
+    split($3, f, ":"); split($5, a, ":")
+    if (ants == 0 || a[3] > rssi) { rssi = a[3]; snr = a[6] }
+    freq = f[1]; mcs = f[2]; bw = f[3]
+    ants++
+}
+$2 == "PKT" {
+    split($3, p, ":")
+    printf "%s %s %s %s %s %s %d %s %s %s %d\n",
+        freq, mcs, bw, rssi, snr,
+        p[1], p[2] * 8 / 1000,
+        p[7], p[8], p[3], ants > "/tmp/wfb.status"
+    close("/tmp/wfb.status")
+    # Stale values would otherwise read as a live link after the signal drops.
+    rssi = "-"; snr = "-"; ants = 0
+}
+' &
+echo $! > /tmp/wfb.pid
+sleep 2
+
+# Adaptive link reports use the same WFB tunnel pair as OpenIPC: ground TX 160
+# reaches the air RX, while air TX 32 reaches this receiver. A single-packet
+# FEC block is essential here: control reports are sparse and must not wait for
+# a video-sized block to fill.
+if [ "$ALINK" = "1" ]; then
+    if [ ! -x /bin/wfb_tun ] || [ ! -x /bin/wfb_tx ] || [ ! -x /bin/wfb_rx ] || \
+       [ ! -x /usr/bin/alink-gs ] || [ ! -c /dev/net/tun ]; then
+        echo "wfb: adaptive link unavailable (missing tunnel, WFB binary, or /dev/net/tun)"
+    else
+        wfb_tun -t "$ALINK_TUN_NAME" -a "$ALINK_TUN_ADDR" \
+                -l "$ALINK_RX_PORT" -u "$ALINK_TX_PORT" &
+        echo $! > /tmp/alink-tun.pid
+        wfb_tx -K "$KEY" -k 1 -n 1 -u "$ALINK_TX_PORT" \
+               -p "$ALINK_TX_RADIO_PORT" -i "$LINK_ID" "$IFACE" &
+        echo $! > /tmp/alink-tx.pid
+        wfb_rx -K "$KEY" -c 127.0.0.1 -u "$ALINK_RX_PORT" \
+               -p "$ALINK_RX_RADIO_PORT" -i "$LINK_ID" "$IFACE" &
+        echo $! > /tmp/alink-rx.pid
+        sleep 1
+        if kill -0 "$(cat /tmp/alink-tun.pid)" 2>/dev/null && \
+           kill -0 "$(cat /tmp/alink-tx.pid)" 2>/dev/null && \
+           kill -0 "$(cat /tmp/alink-rx.pid)" 2>/dev/null; then
+            (
+                while :; do
+                    alink-gs -i "$ALINK_IP" -p "$ALINK_PORT" &
+                    echo $! > /tmp/alink-worker.pid
+                    wait "$!"
+                    echo "wfb: alink-gs exited; restarting"
+                    sleep 1
+                done
+            ) &
+            echo $! > /tmp/alink-supervisor.pid
+            echo "wfb: adaptive link tunnel $ALINK_TUN_ADDR, reporting to $ALINK_IP:$ALINK_PORT"
+        else
+            echo "wfb: adaptive link transport failed to start"
+        fi
+    fi
+fi
+
+# Start the player on a real event, as the apfpv path does with the DHCP lease.
+# The event here is wfb_rx decrypting packets. Starting it earlier clears the OSD
+# and leaves an empty video plane on screen, which looks like a green screen
+# rather than "nothing is arriving".
+#
+# rssi is the tell: wfb_rx records antenna stats only for packets that decrypted,
+# so a value means the link is genuinely carrying video, and a bare packet count
+# with no rssi means the key is wrong.
+wfb_state() {
+    set -- $(cat /tmp/wfb.status 2>/dev/null)
+    [ $# -ge 11 ] || { echo none; return; }
+    [ "$6" = "0" ] && { echo none; return; }
+    [ "$4" = "-" ] && { echo nokey; return; }
+    echo up
+}
+splash() {
+    [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] || return 0
+    killall fb-splash 2>/dev/null
+    fb-splash -p "OPENIPC GROUND STATION" "$1" "$2" >/dev/null 2>&1
+}
+(
+    last=start
+    down=0
+    while :; do
+        now=$(wfb_state)
+        if [ "$now" = "up" ]; then
+            down=0
+            if [ ! -f /tmp/fpv.pid ] || ! kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null; then
+                fpv-start udp
+                # After fpv-start, never before: it clears the OSD layer to get
+                # the splash off the screen, which would take the overlay too.
+                if [ "$OSD" = "1" ] && [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
+                    fb-splash --wfb >/dev/null 2>&1 &
+                fi
+            fi
+        else
+            # A second without decrypts is normal between keyframes; only give up
+            # after several, or the picture would be torn down and rebuilt
+            # constantly on a marginal link.
+            down=$((down + 1))
+            if [ $down -ge 5 ]; then
+                if [ -f /tmp/fpv.pid ]; then
+                    fpv-stop
+                elif [ "$now" != "$last" ]; then
+                    case "$now" in
+                        nokey) splash "AIR UNIT HEARD, WRONG KEY" \
+                                      "copy drone.key to the air unit" ;;
+                        *)     splash "WAITING FOR AIR UNIT" \
+                                      "channel $CHANNEL  link_id $LINK_ID" ;;
+                    esac
+                fi
+            fi
+        fi
+        [ $down -ge 5 ] && last=$now
+        sleep 2
+    done
+) &
+wait

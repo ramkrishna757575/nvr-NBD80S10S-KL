@@ -1,0 +1,16 @@
+#!/bin/sh
+# Supervisor before worker: killing the worker while its parent is still in
+# wait() only makes the parent start another one.
+[ -f /tmp/alink-supervisor.pid ] && kill "$(cat /tmp/alink-supervisor.pid)" 2>/dev/null
+[ -f /tmp/alink-worker.pid ] && kill "$(cat /tmp/alink-worker.pid)" 2>/dev/null
+killall alink-gs 2>/dev/null
+[ -f /tmp/alink-rx.pid ] && kill "$(cat /tmp/alink-rx.pid)" 2>/dev/null
+[ -f /tmp/alink-tx.pid ] && kill "$(cat /tmp/alink-tx.pid)" 2>/dev/null
+[ -f /tmp/alink-tun.pid ] && kill "$(cat /tmp/alink-tun.pid)" 2>/dev/null
+killall wfb_tx wfb_tun 2>/dev/null
+rm -f /tmp/alink-worker.pid /tmp/alink-supervisor.pid /tmp/alink-rx.pid \
+    /tmp/alink-tx.pid /tmp/alink-tun.pid
+[ -f /tmp/wfb.pid ] && kill "$(cat /tmp/wfb.pid)" 2>/dev/null
+killall wfb_rx 2>/dev/null
+rm -f /tmp/wfb.pid
+fpv-stop

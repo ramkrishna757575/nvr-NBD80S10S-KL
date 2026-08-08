@@ -1,0 +1,47 @@
+#!/bin/sh
+# Link status, refreshed once a second. -1 prints once and exits.
+#
+# wfb-ng's own wfb-cli is a Python/twisted ncurses client talking to the
+# aggregator service, none of which exists here. It is not needed: wfb_rx prints
+# a report on stdout every second, and wfb-start reduces that to the current
+# values in /tmp/wfb.status. That file is the only way to reach them -- wfb_rx
+# starts at boot and owns the radio, so nothing later can read its stdout. It is
+# a single line, rewritten in place, not a growing log.
+STATUS=/tmp/wfb.status
+ONCE=0
+[ "$1" = "-1" ] && ONCE=1
+
+show() {
+    if [ ! -f $STATUS ]; then
+        echo "wfb-cli: no stats yet -- is wfb-start running? (mode = wfb)"
+        return 1
+    fi
+    if [ -n "$(find $STATUS -mmin +1 2>/dev/null)" ]; then
+        echo "wfb-cli: stats are stale, wfb_rx may have exited"
+        return 1
+    fi
+    # Fixed field order from wfb-start's parser; positional to avoid eval.
+    set -- $(cat $STATUS)
+    [ $# -ge 11 ] || { echo "wfb-cli: short status line"; return 1; }
+    if [ "$6" = "0" ]; then
+        # A wrong link_id or radio_port is dropped by wfb_rx's capture filter
+        # before it counts anything, so it is indistinguishable from silence.
+        echo "no signal            wrong channel, or link_id/radio_port mismatch"
+    elif [ "$4" = "-" ]; then
+        # Past that filter, so link_id and radio_port agree. wfb_rx only records
+        # rssi for packets it decrypted, so there is no signal strength to show.
+        echo "receiving ${6} pkt/s, none decrypt (decerr ${10}) -- wrong key"
+    else
+        echo "rssi ${4}dBm  snr ${5}dB   ${6} pkt/s  ${7} kbit/s   fec ${8} lost ${9} decerr ${10}   ${1}MHz mcs${2} bw${3}"
+    fi
+}
+
+if [ $ONCE -eq 1 ]; then
+    show
+    exit $?
+fi
+echo "wfb-cli: ctrl-c to stop"
+while :; do
+    show
+    sleep 1
+done

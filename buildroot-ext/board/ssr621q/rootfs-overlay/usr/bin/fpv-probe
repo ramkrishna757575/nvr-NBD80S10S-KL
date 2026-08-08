@@ -1,0 +1,42 @@
+#!/bin/sh
+# usage: fpv-probe [ip]   (default: the DHCP router, i.e. usually the camera)
+TARGET=${1:-$(cat /tmp/apfpv-gw 2>/dev/null)}
+if [ -z "$TARGET" ]; then
+    ip=$(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+    [ -n "$ip" ] && TARGET=$(echo "$ip" | cut -d. -f1-3).1
+fi
+[ -z "$TARGET" ] && { echo "fpv-probe: no target -- associate first, or pass an IP"; exit 1; }
+
+echo "fpv-probe: target $TARGET"
+ping -c 2 -W 2 "$TARGET" 2>&1 | tail -3
+
+echo "fpv-probe: TCP ports"
+for p in 554 8554 7070 80 8080 8000 34567; do
+    if nc -w 2 "$TARGET" "$p" < /dev/null > /dev/null 2>&1; then
+        echo "  $p OPEN"
+    fi
+done
+
+echo "fpv-probe: RTSP DESCRIBE"
+for p in 554 8554 7070; do
+    for path in "" live live/ch0 live/ch00_0 11 0 stream0 video1 \
+                cam/realmonitor?channel=1
+    do
+        url="rtsp://$TARGET:$p/$path"
+        resp=$(printf 'DESCRIBE %s RTSP/1.0\r\nCSeq: 1\r\nAccept: application/sdp\r\n\r\n' \
+               "$url" | nc -w 3 "$TARGET" "$p" 2>/dev/null)
+        [ -z "$resp" ] && continue
+        case "$resp" in
+            RTSP/1.0\ 200*)
+                echo "  OK  $url"
+                echo "$resp"
+                echo "fpv-probe: RTSP works -- mi-player needs an RTSP client."
+                exit 0 ;;
+            RTSP*) echo "  $(echo "$resp" | head -1 | tr -d '\r')  $url" ;;
+        esac
+    done
+done
+
+echo "fpv-probe: no RTSP 200. The camera may simply push UDP; watch for it:"
+echo "  timeout 10 nc -u -l -p 5600 | od -A x -t x1 -N 64"
+echo "(an RTP packet starts 80 60 or 80 e0; Annex-B starts 00 00 00 01)"

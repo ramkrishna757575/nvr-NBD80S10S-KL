@@ -1,0 +1,150 @@
+#!/bin/sh
+# usage: apfpv [ssid] [password] [iface]
+SSID=${1:-OpenIPC}
+PSK=${2:-12345678}
+IFACE=${3:-wlan0}
+CONF=/tmp/wpa_apfpv.conf
+
+[ -d /sys/class/net/$IFACE ] || load-wifi || exit 1
+
+# wpa_supplicant needs this for its control socket. The initramfs ships it, but
+# create it defensively in case /var was mounted over.
+mkdir -p /var/run
+
+# wfb-ng and apfpv are mutually exclusive: one needs monitor mode, the other
+# managed. Stop anything holding the interface first -- but only this
+# interface's DHCP client, since eth0 has one of its own.
+killall wfb_rx wpa_supplicant 2>/dev/null
+[ -f /var/run/udhcpc.$IFACE.pid ] && kill "$(cat /var/run/udhcpc.$IFACE.pid)" 2>/dev/null
+rm -rf /var/run/wpa_supplicant
+sleep 1
+
+cat > $CONF << CONFEOF
+ctrl_interface=/var/run/wpa_supplicant
+network={
+    ssid="$SSID"
+    psk="$PSK"
+}
+CONFEOF
+
+# Back to managed mode only if it is not already there. A freshly loaded driver
+# comes up managed, and an unnecessary down/up right after probe is exactly the
+# kind of poke that seems to upset it.
+mode=$(iw dev $IFACE info 2>/dev/null | awk '/type/{print $2}')
+if [ "$mode" != "managed" ]; then
+    echo "apfpv: switching $IFACE from '${mode:-unknown}' to managed"
+    wifi-monitor $IFACE managed >/dev/null 2>&1
+fi
+ifconfig $IFACE up
+
+echo "apfpv: joining '$SSID' on $IFACE"
+# nl80211 first (what the driver's cfg80211 layer implements); wext is the
+# fallback since this driver supports both. Errors go to a log rather than
+# /dev/null -- "Cannot open RFKILL control device" is harmless noise, but real
+# failures like a missing control-interface directory need to be visible.
+if ! wpa_supplicant -B -i $IFACE -c $CONF -D nl80211 >/tmp/wpa.log 2>&1; then
+    echo "apfpv: nl80211 failed, trying wext"
+    if ! wpa_supplicant -B -i $IFACE -c $CONF -D wext >>/tmp/wpa.log 2>&1; then
+        echo "apfpv: wpa_supplicant failed to start:"
+        grep -viE "rfkill|DSCP-POLICY" /tmp/wpa.log | tail -8
+        exit 1
+    fi
+fi
+
+# Publish what the overlay needs to explain itself. fb-splash --stats polls
+# /tmp/wifi-status once a second; without it the only on-screen symptom of a
+# failed join is "dormant", which says nothing about whether the AP was even
+# visible or why it refused us.
+wifi_status() {
+    ST=$(wpa_cli -i $IFACE status 2>/dev/null)
+    SS=$(echo "$ST" | sed -n 's/^ssid=//p')
+    WS=$(echo "$ST" | sed -n 's/^wpa_state=//p')
+    FQ=$(echo "$ST" | sed -n 's/^freq=//p')
+    SG=$(iw dev $IFACE link 2>/dev/null | sed -n 's/.*signal: \(-\{0,1\}[0-9]*\).*/\1/p')
+    # Not associated: fall back to the scan so we can still say whether the AP
+    # is on the air and on which band.
+    if [ -z "$SS" ]; then
+        SS=$SSID
+        SCAN=$(iw dev $IFACE scan 2>/dev/null | awk -v s="$SSID" '
+            /freq:/{f=$2} /signal:/{g=$2}
+            /SSID: /{ if (substr($0, index($0,": ")+2) == s) { print f, g; exit } }')
+        if [ -n "$SCAN" ]; then
+            FQ=${SCAN%% *}
+            SG=${SCAN##* }
+        else
+            FQ=""
+        fi
+    fi
+    {
+        echo "ssid=$SS"
+        echo "freq=$FQ"
+        echo "signal=$SG"
+        echo "state=${WS:-UNKNOWN}"
+        echo "reg=$(cat /etc/wifi-cc 2>/dev/null)"
+        echo "note=$1"
+    } > /tmp/wifi-status
+}
+
+echo "apfpv: waiting for association ..."
+n=0
+while [ $n -lt 20 ]; do
+    wpa_cli -i $IFACE status 2>/dev/null | grep -q "wpa_state=COMPLETED" && break
+    n=$((n + 1))
+    sleep 1
+done
+
+# If it did not come up, say why. wpa_supplicant keeps retrying in the
+# background, so this is diagnosis rather than failure -- but without it the
+# only symptom is a dormant interface, which says nothing about whether the AP
+# was even visible, what band it is on, or whether the key was rejected.
+if ! wpa_cli -i $IFACE status 2>/dev/null | grep -q "wpa_state=COMPLETED"; then
+    echo "apfpv: not associated after ${n}s. Visible networks:"
+    iw dev $IFACE scan 2>/dev/null |
+        awk '/^BSS/{bss=$2} /freq:/{f=$2} /signal:/{s=$2} /SSID:/{
+              printf "  %-20s %s MHz %s dBm  %s\n", $2, f, s, bss }' |
+        head -12
+    echo "apfpv: regulatory domain $(cat /etc/wifi-cc 2>/dev/null)"
+    echo "apfpv: wpa_state=$(wpa_cli -i $IFACE status 2>/dev/null | sed -n 's/^wpa_state=//p')"
+    grep -iE "auth|assoc|reason|WRONG_KEY|4-Way" /tmp/wpa.log 2>/dev/null | tail -5
+    echo "apfpv: if the AP is 5GHz, set the regulatory domain: wifi_cc=XX on the"
+    echo "apfpv: kernel command line (default 00 blocks most 5GHz channels)"
+
+    # Pick the most specific explanation available for the overlay.
+    REASON=$(grep -oiE "WRONG_KEY|4-Way handshake failed|authentication.*timed out|association.*timed out" \
+             /tmp/wpa.log 2>/dev/null | tail -1)
+    if [ -z "$REASON" ]; then
+        if iw dev $IFACE scan 2>/dev/null | grep -q "SSID: $SSID"; then
+            REASON="AP SEEN BUT JOIN FAILED"
+        else
+            REASON="AP NOT FOUND - CHECK BAND/REG"
+        fi
+    fi
+    wifi_status "$REASON"
+else
+    wifi_status ""
+fi
+
+# wpa_supplicant keeps scanning on its own, so a drone that is not powered up yet
+# is not an error -- the action script will pick it up whenever it appears.
+if wpa_cli -i $IFACE status 2>/dev/null | grep -q "wpa_state=COMPLETED"; then
+    echo "apfpv: associated"
+else
+    echo "apfpv: not associated yet -- will keep retrying in the background"
+fi
+
+# DHCP is driven by association events from here on, so powering the drone on
+# later or rebooting it re-acquires an address automatically.
+killall wpa_cli 2>/dev/null
+wpa_cli -i $IFACE -a /usr/share/udhcpc/apfpv-action.sh -B >/dev/null 2>&1
+
+# On-screen counters, so the display shows whether packets are actually arriving.
+if [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
+    killall fb-splash 2>/dev/null
+    fb-splash --stats $IFACE >/dev/null 2>&1 &
+    echo "apfpv: on-screen stats started"
+fi
+
+sleep 3
+ifconfig $IFACE | grep "inet addr" || echo "apfpv: no IP yet"
+echo "apfpv: association/DHCP events will be appended to /tmp/apfpv.log"
+echo "apfpv: live state -> wpa_cli -i $IFACE status"

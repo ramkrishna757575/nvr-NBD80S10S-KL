@@ -1,0 +1,60 @@
+#!/bin/sh
+DIR=/lib/modules/wifi
+
+# Regulatory domain. Without one the driver runs in the world domain (00),
+# which forbids active scanning and transmission on most 5GHz channels: the
+# adapter then either sees nothing or catches a stray beacon on a passive scan
+# and goes dormant instead of associating. The driver takes an alpha2 directly,
+# so this works without CRDA or a regulatory.db.
+CC=$(cat /etc/wifi-cc 2>/dev/null)
+[ -n "$CC" ] || CC=00
+
+if grep -qE "^(88XXau_wfb|8812eu) " /proc/modules; then
+    echo "wifi driver already loaded"
+    ip link show wlan0 2>/dev/null || echo "wlan0 did not appear"
+    exit 0
+fi
+
+# Two chips, two drivers, and the wrong one binds nothing at all. Look the
+# adapter up in sysfs and pick: busybox here has no lsusb and there is no
+# /proc/bus/usb. Port 3 (Sstar-ehci-3) is the one that enumerates reliably --
+# port 2 browns out during enumeration (error -110, repeated power cycles).
+# The ids are each driver's own usb_intf.c table.
+KO=""
+found=""
+for d in /sys/bus/usb/devices/*/idVendor; do
+    [ -f "$d" ] || continue
+    v=$(cat $d)
+    p=$(cat ${d%idVendor}idProduct 2>/dev/null)
+    case "$v:$p" in
+        0bda:a81a|0bda:a82a|0bda:e822)
+            KO=$DIR/8812eu.ko; found="$v:$p (8812EU)"; break ;;
+        2604:0012|0bda:8812|0bda:881a|2357:0101|0e8d:*)
+            KO=$DIR/88XXau_wfb.ko; found="$v:$p (8812AU)"; break ;;
+    esac
+done
+
+if [ -n "$found" ]; then
+    echo "adapter $found"
+else
+    # An unlisted id is more likely a rebadged AU than a broken board, so try
+    # rather than refuse.
+    KO=$DIR/88XXau_wfb.ko
+    echo "warning: no known adapter id in /sys/bus/usb/devices --"
+    echo "         trying 8812AU; if enumeration failed, use the other USB port"
+fi
+
+[ -f "$KO" ] || { echo "no $KO"; exit 1; }
+
+# One unknown parameter makes insmod reject the whole module, and not every
+# driver build has rtw_country_code.
+insmod $KO rtw_country_code=$CC "$@" 2>/dev/null ||
+    insmod $KO "$@" ||
+    exit 1
+echo "$(basename $KO) loaded (regulatory domain $CC)"
+# Let the driver finish attaching before anyone touches the interface. The
+# 8812AU re-enumerates once on probe, and poking it during that window seems
+# to provoke a disconnect/re-enumerate loop.
+sleep 5
+
+ip link show wlan0 2>/dev/null || echo "wlan0 did not appear"

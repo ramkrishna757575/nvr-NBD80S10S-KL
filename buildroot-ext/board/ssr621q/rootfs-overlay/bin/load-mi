@@ -1,6 +1,6 @@
 #!/bin/sh
-# Usage: load-mi [sdk|xm|hybrid] [vdec_debug_level]   (default: xm, 0)
-SET=${1:-xm}
+# Usage: load-mi [sdk|xm|hybrid] [vdec_debug_level]   (default: sdk, 0)
+SET=${1:-sdk}
 VDEC_DEBUG=${2:-0}
 DIR=/lib/modules/$SET
 if [ ! -d $DIR ]; then

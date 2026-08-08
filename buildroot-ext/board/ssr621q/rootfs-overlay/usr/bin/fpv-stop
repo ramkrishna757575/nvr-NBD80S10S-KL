@@ -1,0 +1,15 @@
+#!/bin/sh
+# Link went away: stop the player and put something on screen, rather than
+# leaving the last decoded frame frozen there.
+if [ -f /tmp/fpv.pid ]; then
+    kill "$(cat /tmp/fpv.pid)" 2>/dev/null
+    rm -f /tmp/fpv.pid
+fi
+rm -f /tmp/fpv.url
+killall mi-player mi-player-alkaid 2>/dev/null
+echo "fpv: link down, player stopped" > /dev/console
+[ -x /bin/fb-splash ] && [ -e /dev/fb0 ] && \
+    fb-splash -p "OPENIPC GROUND STATION" \
+                 "LINK LOST" \
+                 "WAITING FOR AIR UNIT" >/dev/null 2>&1
+exit 0

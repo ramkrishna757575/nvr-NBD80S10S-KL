@@ -1,0 +1,30 @@
+#!/bin/sh
+case "$1" in
+    deconfig)
+        ifconfig $interface 0.0.0.0
+        fpv-stop
+        ;;
+    bound|renew)
+        # A drone AP handing out 192.168.1.x collides with eth0's static
+        # 192.168.1.10: two interfaces in one subnet makes replies leave via the
+        # wrong one and kills telnet, which is our only console. Refuse it and
+        # say so loudly rather than losing access.
+        eth_net=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9]*\.[0-9]*\.[0-9]*\)\..*/\1/p')
+        new_net=$(echo "$ip" | cut -d. -f1-3)
+        if [ -n "$eth_net" ] && [ "$eth_net" = "$new_net" ]; then
+            echo "apfpv: REFUSING $ip -- collides with eth0 subnet $eth_net.0/24" > /dev/console
+            echo "apfpv: change the air unit's AP subnet, or boot with apfpv=off" > /dev/console
+            ifconfig $interface 0.0.0.0
+            exit 0
+        fi
+        ifconfig $interface $ip netmask ${subnet:-255.255.255.0}
+        # Keep the router address: on an AP-mode FPV camera the gateway IS the
+        # camera, so it is the first thing to probe for a video stream. We still
+        # do not install a default route (that would send eth0 traffic astray).
+        echo "${router%% *}" > /tmp/apfpv-gw
+        echo "apfpv: $interface = $ip (router ${router:-none}, route not installed)"
+        # This is the event we actually care about: the link is now usable.
+        fpv-start "${router%% *}"
+        ;;
+esac
+exit 0

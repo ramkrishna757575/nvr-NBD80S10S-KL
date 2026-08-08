@@ -1,0 +1,28 @@
+#!/bin/sh
+case "$1" in
+    deconfig)
+        ifconfig $interface 0.0.0.0
+        ;;
+    leasefail|nak)
+        fb=$(cat /tmp/eth-fallback-ip 2>/dev/null)
+        [ -n "$fb" ] || fb=192.168.1.10
+        ifconfig $interface $fb netmask 255.255.255.0 up
+        echo "$fb" > /tmp/eth-ip
+        echo "net: no DHCP lease on $interface, using fallback $fb" > /dev/console
+        ;;
+    bound|renew)
+        ifconfig $interface $ip netmask ${subnet:-255.255.255.0} up
+        echo "$ip" > /tmp/eth-ip
+        # Take the default route only if nothing holds it: the drone's AP is not
+        # an internet gateway, so eth0 is the sensible owner, but never steal it.
+        if [ -n "$router" ] && ! route -n 2>/dev/null | grep -q '^0\.0\.0\.0'; then
+            route add default gw ${router%% *} dev $interface 2>/dev/null
+        fi
+        if [ -n "$dns" ]; then
+            : > /etc/resolv.conf
+            for s in $dns; do echo "nameserver $s" >> /etc/resolv.conf; done
+        fi
+        echo "net: $interface $ip  ->  ssh root@$ip" > /dev/console
+        ;;
+esac
+exit 0

@@ -1,0 +1,156 @@
+#!/bin/sh
+REBOOT=1
+WIPE_CFG=0
+INSECURE=0
+SRC=
+SIG=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -n) REBOOT=0 ;;
+        -c) WIPE_CFG=1 ;;
+        -k) INSECURE=1 ;;
+        -h|--help)
+            echo "usage: sysupgrade [-n] [-c] [-k] <uImage|http://url>"
+            echo "  -n  write but do not reboot"
+            echo "  -c  also erase /mnt/cfg (factory reset)"
+            echo "  -k  skip the signature check (for images you built yourself)"
+            echo "Settings in /mnt/cfg are kept unless -c is given."
+            exit 0 ;;
+        -*) echo "sysupgrade: unknown option $1"; exit 1 ;;
+        *)  SRC=$1 ;;
+    esac
+    shift
+done
+[ -n "$SRC" ] || { echo "usage: sysupgrade [-n] [-c] [-k] <uImage|http://url>"; exit 1; }
+
+line=$(grep '"system"' /proc/mtd)
+[ -n "$line" ] || {
+    echo "sysupgrade: no 'system' partition. Add to bootargs:"
+    echo "  mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)"
+    exit 1
+}
+MTD=${line%%:*}
+PSIZE=$((0x$(echo "$line" | awk '{print $2}')))
+
+# /tmp is deliberately capped at 8m and an image is bigger than that, so the
+# download needs its own tmpfs. Room for two copies: unzip needs the archive and
+# the extracted image at the same time.
+SCRATCH=/mnt/sysupgrade
+NEED_KB=$(( PSIZE / 1024 * 2 + 1024 ))
+scratch_clean() { umount $SCRATCH 2>/dev/null; rmdir $SCRATCH 2>/dev/null; }
+scratch_mount() {
+    [ -d $SCRATCH ] && return 0
+    avail=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+    [ "${avail:-0}" -gt $((NEED_KB + 8192)) ] || {
+        echo "sysupgrade: ${avail}K RAM free, need ~${NEED_KB}K plus headroom"
+        echo "            stop the video first: fpv-stop"
+        exit 1
+    }
+    mkdir -p $SCRATCH || exit 1
+    mount -t tmpfs -o size=${NEED_KB}k none $SCRATCH || { rmdir $SCRATCH; exit 1; }
+    trap scratch_clean EXIT
+}
+
+case "$SRC" in
+    http://*|https://*|ftp://*)
+        scratch_mount
+        echo "sysupgrade: downloading $SRC"
+        wget -O $SCRATCH/sysupgrade.bin "$SRC" || exit 1
+        if [ $INSECURE -eq 0 ]; then
+            wget -O $SCRATCH/sysupgrade.sig "$SRC.sig" 2>/dev/null &&
+                SIG=$SCRATCH/sysupgrade.sig
+        fi
+        SRC=$SCRATCH/sysupgrade.bin ;;
+    *)
+        [ -f "$SRC.sig" ] && SIG=$SRC.sig ;;
+esac
+[ -f "$SRC" ] || { echo "sysupgrade: $SRC not found"; exit 1; }
+
+# Accept a CI zip as well as a bare uImage. Detected by magic, not by name, so
+# a renamed download still works. Scratch is RAM, so drop the archive at once.
+if [ "$(od -A n -t x1 -N 4 "$SRC" | tr -d ' \n')" = "504b0304" ]; then
+    echo "sysupgrade: zip archive, extracting"
+    scratch_mount
+    rm -rf $SCRATCH/d && mkdir -p $SCRATCH/d
+    unzip -o -q "$SRC" -d $SCRATCH/d || { echo "sysupgrade: unzip failed"; exit 1; }
+    [ "$SRC" = $SCRATCH/sysupgrade.bin ] && rm -f "$SRC"
+    found=
+    for f in $SCRATCH/d/* $SCRATCH/d/*/*; do
+        [ -f "$f" ] || continue
+        [ "$(od -A n -t x1 -N 4 "$f" | tr -d ' \n')" = "27051956" ] && { found=$f; break; }
+    done
+    [ -n "$found" ] || { echo "sysupgrade: no uImage inside the archive"; exit 1; }
+    echo "sysupgrade: using $(basename "$found")"
+    SRC=$found
+    # CI packs the detached signature alongside the image, so a zip can still be
+    # verified. Named after the image where possible, else the only .sig there.
+    if [ -f "$found.sig" ]; then
+        SIG=$found.sig
+    else
+        for s in $SCRATCH/d/*.sig $SCRATCH/d/*/*.sig; do
+            [ -f "$s" ] && { SIG=$s; break; }
+        done
+    fi
+fi
+
+# Check before erasing, not after: a wrong file leaves an unbootable board and
+# only U-Boot to recover with.
+SIZE=$(wc -c < "$SRC")
+magic=$(od -A n -t x1 -N 4 "$SRC" | tr -d ' \n')
+load=$(od -A n -t x1 -j 16 -N 4 "$SRC" | tr -d ' \n')
+dsize=$(od -A n -t x1 -j 12 -N 4 "$SRC" | tr -d ' \n')
+[ "$magic" = "27051956" ] || { echo "sysupgrade: not a uImage (magic $magic)"; exit 1; }
+[ "$load" = "20008000" ] || { echo "sysupgrade: load address $load, not an image for this board"; exit 1; }
+# Magic and load address survive truncation, so a half-finished download would
+# otherwise pass. The header's own payload length does not.
+EXPECT=$((0x$dsize + 64))
+[ "$SIZE" -eq "$EXPECT" ] || {
+    echo "sysupgrade: size mismatch -- file is $SIZE bytes, header says $EXPECT"
+    echo "            (truncated or corrupt download)"
+    exit 1
+}
+[ "$SIZE" -le "$PSIZE" ] || { echo "sysupgrade: image $SIZE > partition $PSIZE"; exit 1; }
+
+# Signature last, because it is the only check that says where the image came
+# from. The ones above only say it is shaped like a kernel for this board, which
+# an attacker who can rewrite the download can satisfy trivially -- busybox wget
+# does not validate certificates, so the transport proves nothing.
+if [ $INSECURE -eq 1 ]; then
+    echo "sysupgrade: WARNING -- signature check skipped (-k)"
+elif [ ! -x /usr/sbin/verify-sig ]; then
+    echo "sysupgrade: verify-sig is missing from this image" >&2
+    exit 1
+elif [ -z "$SIG" ]; then
+    echo "sysupgrade: no signature found for this image" >&2
+    echo "            expected it next to the image as <name>.sig" >&2
+    echo "            pass -k to install it anyway" >&2
+    exit 1
+elif ! verify-sig "$(sha256sum "$SRC" | cut -c1-64)" "$SIG"; then
+    echo "sysupgrade: SIGNATURE CHECK FAILED -- refusing to install" >&2
+    exit 1
+else
+    echo "sysupgrade: signature OK"
+fi
+
+echo "sysupgrade: $SIZE bytes -> /dev/$MTD ($PSIZE available)"
+echo "sysupgrade: DO NOT POWER OFF. This takes about a minute."
+# flashcp erases, writes and verifies; without -v there is no sign of progress.
+if ! flashcp -v "$SRC" /dev/$MTD; then
+    echo "sysupgrade: WRITE FAILED -- do not reboot, reflash over TFTP from U-Boot"
+    exit 1
+fi
+
+if [ $WIPE_CFG -eq 1 ]; then
+    c=$(grep '"cfg"' /proc/mtd)
+    if [ -n "$c" ]; then
+        umount /mnt/cfg 2>/dev/null
+        flash_eraseall -j /dev/${c%%:*} >/dev/null 2>&1 &&
+            echo "sysupgrade: /mnt/cfg erased, settings and host keys are gone"
+    fi
+fi
+
+if [ $REBOOT -eq 1 ]; then
+    echo "sysupgrade: done, rebooting"
+    exec reboot
+fi
+echo "sysupgrade: done, reboot when ready"

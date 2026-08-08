@@ -1,0 +1,11 @@
+#!/bin/sh
+# Print names of RTL8812AU/8812EU/8812CU interfaces, one per line.
+for i in /sys/class/net/*; do
+    [ -e "$i/device/driver" ] || continue
+    drv=$(basename $(readlink -f "$i/device/driver"))
+    case "$drv" in
+        rtl88xxau_wfb|rtl88x2eu|rtl88x2cu|88XXau*|8812eu*)
+            basename "$i"
+            ;;
+    esac
+done
