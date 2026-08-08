@@ -456,6 +456,31 @@ openssl pkeyutl -sign -rawin -inkey ~/.config/nvr-signing/signing.key \
 
 `sysupgrade` looks for `<image>.sig` next to the image, at the same URL or path.
 
+### Building U-Boot
+
+`build-uboot.sh` is a separate build path for the IPL_CUST-loaded bootloader;
+`build-sdk.sh` and `sysupgrade` never write it. It builds the patched
+Infinity2M source with the bundled ARM 8.2 toolchain, omitting vendor display
+and SD/MMC boot UI drivers that do not build for this SoC and are not needed to
+load the Linux image from SPI NOR.
+
+```bash
+./build-uboot.sh
+```
+
+The resulting files are in `output/uboot/`:
+
+- `u-boot.xz.img.bin`: the IPL_CUST-compatible U-Boot uImage.
+- `u-boot-slot.bin`: that image padded to the complete 192 KiB `uboot` flash
+  partition, suitable for `flashcp` after deliberately making the partition
+  writable.
+- `SHA256SUMS`: checksums for both images and the raw `u-boot.bin`.
+
+The build validates the uImage CRCs, XZ round trip, and 192 KiB flash limit.
+It does not flash anything. Treat a U-Boot write as a separate recovery-aware
+operation: unlike a normal firmware update, a failed bootloader write requires
+the SPI programmer.
+
 ## Air unit in apfpv mode
 
 For wfb mode see [Pairing with a wfb-ng air unit](#pairing-with-a-wfb-ng-air-unit)
@@ -492,6 +517,7 @@ use `mi-player -u 5600`.
 ```
 fetch-deps.sh       download the public prerequisites into build/
 build-sdk.sh        main build: kernel, initramfs, MI stack, players
+build-uboot.sh      isolated Infinity2M U-Boot build; produces no flash writes
 build-wfb.sh        wfb-ng binaries
 build-apfpv.sh      wpa_supplicant and Wi-Fi client pieces
 src/mi-player.c     RTSP/UDP/file -> MI_VDEC -> MI_DIVP -> MI_DISP -> HDMI
