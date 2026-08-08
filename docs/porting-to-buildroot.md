@@ -256,6 +256,33 @@ same trap has already cost time twice (`build/sdk`, `build/rtl8812au`).
 
 ### Phase 3 — squashfs + overlay, still without buildroot
 
+**Reassessed 2026-08-08: worth doing eventually, but not for the reason given
+here, and not urgently.**
+
+The flash-space argument does not survive measurement. For the same rootfs:
+
+| | bytes |
+| --- | --- |
+| gzip cpio (what the build used to ship) | 7,363,969 |
+| **xz cpio** (what it ships now) | **5,076,380** |
+| squashfs, xz, 256K block | 5,779,456 |
+
+squashfs is *worse* than simply compressing the initramfs properly — it
+compresses in blocks so it can be demand-paged, where a cpio is one solid
+stream. Switching to xz recovered 2.29MB and took the spare room on the system
+partition from 188KB to 2.47MB, with no change to how the board boots or
+upgrades. The RAM argument is weak too: the board sits at 89MB free of 134.
+
+What is left, and still genuine:
+
+- writes that survive a reboot without the `/mnt/cfg` special case
+- phase 4 becoming a packaging exercise rather than a redesign
+
+Both are real, neither is pressing, and both collide with `sysupgrade`, which
+erases the partition it is running from -- safe only because the root is in RAM.
+Redesigning that belongs with the buildroot port, where it has to happen anyway,
+not as a standalone change to a working ground station.
+
 The biggest structural change, and independently valuable: it frees the RAM the
 initramfs occupies and removes the `/mnt/cfg` special case. Doing it here means
 phase 4 is a packaging exercise rather than a redesign.
