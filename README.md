@@ -206,7 +206,7 @@ server on the link it falls back to `192.168.1.10`.
 
 Pass `ipaddr=A.B.C.D` on the kernel command line for a fixed address instead.
 If you do, keep it outside the router's DHCP pool — otherwise the pool can
-lease that same address to another device while the board is off, and telnet
+lease that same address to another device while the board is off, and SSH
 then reaches the wrong host.
 
 The MAC comes from U-Boot's `ethaddr`, which only reaches the kernel if bootargs
@@ -242,7 +242,6 @@ reboot
 | `codec`, `video_size` | wfb mode; what the air unit transmits. Nothing announces it over wfb, so it has to be stated |
 | `ssid`, `psk` | apfpv mode |
 | `region` | regulatory domain, two-letter country code |
-| `telnet` | `1` enables the telnet console. Off by default — see below |
 
 Precedence is built-in default, then this file, then the kernel command line —
 so `link=`, `apfpv_ssid=`, `apfpv_psk=` and `wifi_cc=` still override it. That
@@ -428,24 +427,6 @@ generating it on this SoC is slow and no current client needs it.
 `BAKE_HOST_KEYS=1` embeds the build-time keys instead, for a private build on a
 board with no `cfg` partition.
 
-### Telnet
-
-Off by default. It used to run as `telnetd -l /bin/sh`, which is a root shell for
-anyone who can reach port 23, with no password and nothing encrypted. That was
-defensible while UART RX was dead and SSH unproven; now that SSH works and keeps
-its host key across reflashes, it is only exposure.
-
-Turn it on when SSH itself is what broke:
-
-```
-telnet = 1        # in /mnt/cfg/wfb.conf
-telnet=1          # or on the kernel command line, if the config is unreadable
-```
-
-It runs `/bin/login` when enabled, so it asks for the root password rather than
-handing out a shell. The password still crosses the network in the clear — use
-it to repair the board, then turn it back off.
-
 ### Signing images
 
 `sysupgrade` fetches over HTTPS, but BusyBox says plainly what it does not do:
@@ -559,7 +540,7 @@ use `mi-player -u 5600`.
 - **The OSD sits above the video plane** at constant alpha 255, so the splash
   hides decoded frames until the framebuffer is cleared.
 - **`/tmp` is RAM.** It is capped at 8 MB; unbounded writes previously triggered
-  the OOM killer and took telnet with them.
+  the OOM killer and took the console with them.
 - **MI modules cannot be unloaded.** `rmmod` oopses the kernel; choose the set
   at boot instead.
 

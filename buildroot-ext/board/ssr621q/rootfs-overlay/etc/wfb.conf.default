@@ -67,10 +67,3 @@ psk = 12345678
 # domain, which forbids transmitting on most 5GHz channels -- a 5GHz air unit
 # will not associate reliably until this is set to your own country.
 region = 00
-
-# --- access ---
-# telnet is an unencrypted console and, unlike SSH, sends the password in the
-# clear. Off by default; turn it on only to recover a board whose SSH has broken,
-# and only on a network you trust. telnet=1 on the kernel command line does the
-# same without needing this file to be readable.
-telnet = 0

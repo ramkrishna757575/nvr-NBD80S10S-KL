@@ -1,0 +1,10 @@
+# BusyBox fragment: give wget TLS, so the board can fetch its own updates from
+# the release URL the CI notes print.
+#
+# ssl_client is BusyBox's own TLS, not OpenSSL -- a few tens of KB rather than a
+# megabyte and a half. It does NOT validate certificates, which is why
+# sysupgrade verifies an Ed25519 signature over the image instead of trusting
+# the transport.
+CONFIG_TLS=y
+CONFIG_SSL_CLIENT=y
+CONFIG_FEATURE_WGET_HTTPS=y
