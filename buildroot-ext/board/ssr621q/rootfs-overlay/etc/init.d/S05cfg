@@ -33,6 +33,14 @@ case "$1" in
 			echo "cfg: wrote a default $CFG_DIR/wfb.conf"
 		fi
 		ln -sf $CFG_DIR/wfb.conf /etc/wfb.conf
+		# Keep the ssh host keys here too, so the fingerprint survives a
+		# reboot. /etc is tmpfs in an initramfs, so dropbear would
+		# otherwise generate a new identity on every boot and every client
+		# would warn about it. Runs before S50dropbear.
+		mkdir -p $CFG_DIR/dropbear
+		chmod 700 $CFG_DIR/dropbear
+		rm -rf /etc/dropbear
+		ln -sf $CFG_DIR/dropbear /etc/dropbear
 	else
 		echo "cfg: no 'cfg' partition, settings will NOT persist. Add to bootargs:"
 		echo "     mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg)"

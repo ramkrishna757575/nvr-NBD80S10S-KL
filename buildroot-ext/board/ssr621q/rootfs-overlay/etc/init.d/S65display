@@ -1,0 +1,75 @@
+#!/bin/sh
+#
+# Bring up HDMI and draw the boot splash.
+#
+# Runs after S60mi, because it needs the MI modules, and before S70link, so
+# there is something on screen while the radio is still coming up.
+#
+# Override with disp=720 or disp=off on the kernel command line.
+#
+
+case "$1" in
+  start)
+	DISP_MODE=""
+	for arg in $(cat /proc/cmdline); do
+		case $arg in
+			disp=720) DISP_MODE=720 ;;
+			disp=off) DISP_MODE=off ;;
+		esac
+	done
+
+	if [ "$DISP_MODE" = "off" ]; then
+		echo "display: disabled (disp=off)"
+		exit 0
+	fi
+
+	# Never returns by design: it holds /dev/mi_hdmi open, and closing that
+	# fd releases the HDMI client and stops the transmitter.
+	mi-disp-init $DISP_MODE > /tmp/mi-disp-init.log 2>&1 &
+
+	# Poll rather than sleep a fixed time: MI_HDMI_Start only returns once
+	# the transmitter has read EDID and finished its HPD handshake, which
+	# varies with the monitor.
+	n=0
+	while [ $n -lt 15 ]; do
+		grep -q "MI_HDMI_Start" /tmp/mi-disp-init.log 2>/dev/null && break
+		n=$((n + 1))
+		sleep 1
+	done
+
+	if grep -q "MI_HDMI_Start.*ok" /tmp/mi-disp-init.log 2>/dev/null; then
+		echo "display: HDMI up"
+	else
+		echo "display: HDMI did not confirm -- see /tmp/mi-disp-init.log"
+	fi
+
+	# Drawn regardless of the check above: the framebuffer is an independent
+	# OSD layer, so a splash may appear even if the HDMI probe was unclear.
+	if [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
+		sleep 1
+		# The lease may not have arrived yet; the live stats overlay
+		# replaces this line as soon as it does.
+		eth_ip=$(cat /tmp/eth-ip 2>/dev/null)
+		[ -n "$eth_ip" ] || eth_ip=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
+		[ -n "$eth_ip" ] || eth_ip="DHCP PENDING"
+		fb-splash -p "OPENIPC GROUND STATION" \
+		             "SSR621Q HDMI OK" \
+		             "SSH $eth_ip" > /tmp/fb-splash.log 2>&1 \
+			&& echo "display: splash drawn" \
+			|| echo "display: splash failed -- see /tmp/fb-splash.log"
+	fi
+	;;
+  stop)
+	killall fb-splash 2>/dev/null
+	killall mi-disp-init 2>/dev/null
+	;;
+  restart|reload)
+	"$0" stop
+	"$0" start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit 0
