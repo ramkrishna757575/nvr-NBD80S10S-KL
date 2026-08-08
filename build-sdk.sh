@@ -264,6 +264,18 @@ if [ ! -d $BUSYBOX_BUILD/libbb ]; then
 fi
 
 cp $SCRIPT_DIR/config/busybox.config $BUSYBOX_BUILD/.config
+# Applets no ground-station script calls: package managers, mail, print and FTP/
+# HTTP servers, UBI (this board is NOR), runit, and assorted desk tools. Done
+# here rather than in config/busybox.config so the base config stays the stock
+# one and this list reads as what it is -- a size cut, not a feature choice.
+for a in DPKG DPKG_DEB RPM RPM2CPIO FTPD FTPGET FTPPUT HTTPD SENDMAIL \
+         MAKEMIME POPMAILDIR REFORMIME MAN LPD LPQ LPR NBDCLIENT \
+         UBIATTACH UBIDETACH UBIMKVOL UBIRENAME UBIRMVOL UBIRSVOL \
+         UBIUPDATEVOL BOOTCHARTD POWERTOP LSSCSI MICROCOM RDATE RDEV \
+         READPROFILE RTCWAKE RUNSV RUNSVDIR SVLOGD CHPST ENVDIR ENVUIDGID \
+         SETUIDGID SOFTLIMIT BEEP HEXEDIT MESG PSTREE PMAP LSOF DC BC; do
+    sed -i "s/^CONFIG_$a=y\$/# CONFIG_$a is not set/" $BUSYBOX_BUILD/.config
+done
 # BusyBox's kconfig has no olddefconfig target; feed oldconfig empty answers so any
 # new symbols take their defaults instead of blocking on a prompt.
 yes "" | make -C $BUSYBOX_BUILD oldconfig > /dev/null
@@ -296,7 +308,14 @@ for s in $MI_SETS; do
     cp -a $MI_OUT/modules/$s/. $INITRAMFS_DIR/lib/modules/$s/
 done
 echo "modules: shipping set(s) '$MI_SETS' ($(du -sh $INITRAMFS_DIR/lib/modules | cut -f1))"
-cp $MI_OUT/lib/*.so $INITRAMFS_DIR/usr/lib/
+# Only the libraries mi-player and mi-disp-init actually link. The MPP drop also
+# carries audio (libmi_ai/ao + the AEC/AED/APC/BF/SRC/SSL codecs), encode, IPU,
+# SED and wlan -- about 1.1M this ground station never opens. Checked rather than
+# assumed: none of the five below has a NEEDED or dlopen() on the others.
+for l in libmi_sys libmi_common libmi_disp libmi_divp libmi_vdec; do
+    cp $MI_OUT/lib/$l.so $INITRAMFS_DIR/usr/lib/ \
+        || { echo "error: $l.so missing from the MI drop" >&2; exit 1; }
+done
 # The alkaid libraries live apart from the 2020 ones -- same sonames, different
 # ABI -- and mi-player-alkaid finds them via its rpath.
 if [ -d $MI_OUT/lib-alkaid ] && echo "$MI_SETS" | grep -qw alkaid; then
@@ -304,6 +323,10 @@ if [ -d $MI_OUT/lib-alkaid ] && echo "$MI_SETS" | grep -qw alkaid; then
     cp $MI_OUT/lib-alkaid/*.so $INITRAMFS_DIR/usr/lib/alkaid/
 fi
 cp -a $MI_OUT/config/. $INITRAMFS_DIR/config/
+# XM's boot logo, splash images and startup chime. Nothing here displays or plays
+# them -- fb-splash draws its own -- and they are 441K. The rest of /config is
+# load-bearing (panel timings, mmap.ini, the VPU firmware).
+rm -f $INITRAMFS_DIR/config/misc/*.jpg $INITRAMFS_DIR/config/misc/*.mp3
 
 # ── RTL8812AU (wfb-ng fork) ───────────────────────────────────────────────────
 # Built further down, once the kernel is configured: an out-of-tree module has to
