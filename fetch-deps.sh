@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fetch the public prerequisites build-sdk.sh expects to find under build/.
+# Fetch the public prerequisites build-buildroot.sh expects to find under build/.
 #
 # Everything here is downloadable. What it CANNOT fetch is build/vendor/ --
 # the XiongMai kernel modules, /config panel timings and libraries lifted from
@@ -26,14 +26,12 @@ RTL_REF=20bcaf511f159bfd8f435f7117b82056fc453572
 # Tip of the v5.15.0.1 branch on 2026-08-08 -- that is the packet-injection
 # branch, and the repository carries no tags to pin to instead.
 RTLEU_REF=48e6e449e089fa954e4e15079bd864039e2960da
-BUSYBOX_VER=1.36.1
-BUSYBOX_URL=https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2
 TOOLCHAIN_URL=https://toolchains.bootlin.com/downloads/releases/toolchains/armv7-eabihf/tarballs/armv7-eabihf--glibc--stable-2018.11-1.tar.bz2
 TOOLCHAIN_DIR=armv7-eabihf--glibc--stable-2018.11-1
 
 # ── python shim ──────────────────────────────────────────────────────────────
 # SigmaStar's kernel Makefile invokes "python", which no longer exists on modern
-# distros. build-sdk.sh puts this directory first on PATH.
+# distros. build-buildroot.sh puts this directory first on PATH.
 if [ ! -e "$BUILD_DIR/shim/python" ]; then
     echo "=== python shim ==="
     mkdir -p "$BUILD_DIR/shim"
@@ -61,22 +59,8 @@ else
     echo "=== toolchain present ==="
 fi
 
-# ── BusyBox source ───────────────────────────────────────────────────────────
-# build-sdk.sh copies this to build/busybox-sdk and builds there, because this
-# tree may carry another track's artifacts.
-if [ ! -f "$BUILD_DIR/busybox/Makefile" ]; then
-    echo "=== BusyBox $BUSYBOX_VER ==="
-    wget -q --show-progress -O /tmp/busybox.tar.bz2 "$BUSYBOX_URL"
-    tar -xjf /tmp/busybox.tar.bz2 -C "$BUILD_DIR"
-    mv "$BUILD_DIR/busybox-$BUSYBOX_VER" "$BUILD_DIR/busybox"
-    rm -f /tmp/busybox.tar.bz2
-else
-    echo "=== BusyBox present ==="
-fi
-
 # ── RTL8812AU (wfb-ng fork) source ───────────────────────────────────────────
-# Only the source; build-sdk.sh stages a prebuilt 88XXau_wfb.ko if one is there
-# and simply skips wifi otherwise.
+# Only the source; the rtl8812au buildroot package builds it against the kernel.
 if [ ! -d "$BUILD_DIR/rtl8812au" ]; then
     echo "=== RTL8812AU driver source ==="
     git clone --filter=blob:none --no-checkout "$RTL_REPO" "$BUILD_DIR/rtl8812au"
@@ -138,7 +122,7 @@ if [ -d "$SCRIPT_DIR/vendor/modules" ] && [ ! -f "$STOCK_DUMP" ] \
     fi
     echo "  checksums OK ($(wc -l < "$SCRIPT_DIR/vendor/MD5SUMS") files)"
     echo ""
-    echo "ready: run ./build-sdk.sh"
+    echo "ready: run ./build-buildroot.sh"
     exit 0
 fi
 
@@ -216,7 +200,7 @@ fi
 echo ""
 if [ -d "$BUILD_DIR/vendor/x_modules/modules" ]; then
     echo "vendor blobs: present ($(ls "$BUILD_DIR"/vendor/x_modules/modules/*.ko 2>/dev/null | wc -l) modules)"
-    echo "ready: run ./build-sdk.sh"
+    echo "ready: run ./build-buildroot.sh"
 else
     echo "vendor blobs: MISSING"
     echo ""

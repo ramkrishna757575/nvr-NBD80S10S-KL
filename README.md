@@ -35,13 +35,21 @@ RTL8812AU ──► wpa_supplicant ──► DHCP ──► RTSP client ──�
 ## Building
 
 ```bash
-./fetch-deps.sh     # SDK, toolchain, BusyBox, driver source, and vendor blobs
-./build-sdk.sh      # kernel + initramfs + MI stack + players
+./fetch-deps.sh         # SDK, toolchain, driver source, and vendor blobs
+./build-buildroot.sh    # kernel + rootfs + MI stack + players
 ```
 
-Output is `output/uImage-sdk` — a single ~11 MB uImage with the kernel and an
-embedded initramfs. The script prints the exact flashing commands for the image
-it just built, and fails if the image would no longer fit in flash.
+Output is `output/uImage` — a single ~9 MB uImage with the kernel and an
+embedded initramfs, plus `output/uImage.sig` beside it. The build fails if the
+image would no longer fit in the `system` partition.
+
+The rootfs is [buildroot](https://buildroot.org/) 2025.02.x, pinned by
+`BUILDROOT_REF` and cloned into `build/buildroot` on first run. Everything the
+image contains is described by
+[`buildroot-ext/configs/ssr621q_fpv_defconfig`](buildroot-ext/configs/ssr621q_fpv_defconfig)
+and the packages under [`buildroot-ext/package/`](buildroot-ext/package). The
+kernel is still the vendor SigmaStar 4.9.84 tree, handed to buildroot through
+`LINUX_OVERRIDE_SRCDIR` so it is only ever read from, never modified in place.
 
 > **The proprietary bits are in `vendor/`.** The XiongMai MI kernel modules, the
 > stock `/config` panel timing tables and the uClibc runtime `config_tool` needs
@@ -63,13 +71,13 @@ it just built, and fails if the image would no longer fit in flash.
 
 ### Prebuilt images
 
-The **Full image** workflow builds a flashable `uImage-sdk` and attaches it to
+The **Full image** workflow builds a flashable `uImage` and attaches it to
 the run as an artifact, on every push to `master` and on demand from the Actions
 tab. Artifacts are kept 30 days.
 
 No private key is baked into a published image — SSH host keys are generated on
 the board's first boot and kept in flash. Root's password is the documented
-default; rebuild with `ROOT_PASSWORD='...'` to change it.
+default, set by `BR2_TARGET_GENERIC_ROOT_PASSWD` in the defconfig.
 
 The modules are not visible in the extracted squashfs trees: they live inside
 `usr` as `lib/modules.tar.lzma`, which `fetch-deps.sh` unpacks.
@@ -78,11 +86,9 @@ Useful variables:
 
 | | |
 | --- | --- |
-| `MI_SETS="xm"` | Which MI module sets to ship. Default `xm`, the only set that both decodes and drives HDMI. Use `MI_SETS="xm alkaid"` to bisect driver problems again. |
-| `FALLBACK_MAC=` | Pin the fallback MAC instead of generating a random one, for reproducible builds. |
-
-`build-wfb.sh` builds the wfb-ng binaries and `build-apfpv.sh` the Wi-Fi client
-pieces; `build-sdk.sh` picks up their output automatically if present.
+| `JOBS=` | Parallel build jobs. Defaults to the host CPU count. |
+| `BUILDROOT_REF=` | Buildroot branch or tag to clone. Default `2025.02.x`. |
+| `NVR_SIGNING_KEY=` | Ed25519 private key to sign with. Default `~/.config/nvr-signing/signing.key`; signing is skipped if it is absent. |
 
 ## Continuous integration
 
@@ -114,7 +120,8 @@ The stock layout, read from the vendor dump and confirmed by the stock
 | `0x000000` | 64 K | IPL + IPL_CUST | keep |
 | `0x010000` | 192 K | U-Boot | keep |
 | `0x040000` | 64 K | U-Boot environment | keep — `saveenv` writes here |
-| `0x050000` | 15.7 M | stock kernel + rootfs | **replaced by our image** |
+| `0x050000` | 11.2 M | stock kernel + rootfs | **replaced by our image** |
+| `0xf80000` | 512 K | `cfg`, JFFS2 | settings and SSH host keys — survives reflash |
 
 > **`sf lock 0` is mandatory.** The flash ships with block protection armed —
 > U-Boot prints `lk=>6, 0x800000`, meaning the lower 8 MB is write protected.
@@ -123,30 +130,36 @@ The stock layout, read from the vendor dump and confirmed by the stock
 > the name, `sf lock 0` sets lock *level 0*, i.e. unlocks everything.
 
 ```
-tftpboot 0x21000000 uImage-sdk
+tftpboot 0x21000000 uImage
 sf probe 0
 sf lock 0
-sf erase 0x50000 0xb00000
+sf erase 0x50000 0x8e0000
 sf write 0x21000000 0x50000 ${filesize}
 ```
+
+The erase length must cover the image and be a whole number of 64 K sectors;
+`0x8e0000` is enough for a ~9 MB image. Erasing the whole `0xb30000` partition
+also works and only costs time.
 
 Verify before making it permanent — this reads back from flash rather than
 trusting the copy still in RAM:
 
 ```
-sf read 0x21000000 0x50000 0xb00000
+sf read 0x21000000 0x50000 0xb30000
 bootm 0x21000000
 ```
 
 Then:
 
 ```
-setenv bootargs 'console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 ethaddr=${ethaddr} mi_set=xm vdec_test=1 vdec_test_rtsp=1 vdec_test_src=1920x1080'
-setenv setargs 'setenv bootargs ${bootargs}'
-setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x50000 0xb00000;bootm 0x21000000'
+setenv setargs 'setenv bootargs console=ttyS0,115200 LX_MEM=0xFF00000 mma_heap=mma_heap_name0,miu=0,sz=0x6e00000 mma_memblock_remove=1 mtdparts=NOR_FLASH:11456k@0x50000(system),512k@0xf80000(cfg) ethaddr=${ethaddr}'
+setenv bootcmd 'run setargs;gpio output 25 1;sf probe 0;sf read 0x21000000 0x50000 0xb30000;bootm 0x21000000'
 setenv bootdelay 3
 saveenv
 ```
+
+`mtdparts` is what gives the kernel the `cfg` partition; without it there is no
+`/dev/mtd1` to hold settings or SSH host keys, and `S05cfg` silently skips.
 
 `run setargs` is what expands `${ethaddr}` — plain `bootm` does not substitute
 U-Boot variables, which is why the stock `bootcmd` used the same indirection.
@@ -163,15 +176,9 @@ the prompt used to be nearly impossible to catch.
 | Option | Meaning |
 | --- | --- |
 | `mi_set=xm\|sdk\|alkaid` | MI module set. Default `xm`. Sets cannot be swapped at runtime — the modules oops on `rmmod`. |
-| `vdec_test=1` | Start the player from init instead of dropping to a shell |
-| `vdec_test_rtsp=1` | Pull RTSP from the DHCP gateway using OpenIPC defaults |
-| `vdec_test_rtsp=URL` | Explicit `rtsp://user:pass@host:port/path` |
-| `vdec_test_file=1` | Decode the bundled clip instead — no network, no RTP |
-| `vdec_test_src=WxH` | Source resolution hint (default `1280x720`) |
-| `vdec_test_probe=1` | Dump the VPU bitstream buffer and the driver-side ES |
-| `vdec_test_log=N` | `mi_vdec` log level |
+| `vdec_debug=N` | `mi_vdec` log level |
+| `link=` | Link mode. Default is wfb-ng; anything else selects the `apfpv` Wi-Fi client. |
 | `apfpv=off` | Do not start the Wi-Fi client |
-| `apfpv_ssid=`, `apfpv_psk=` | Air unit credentials (default `OpenIPC` / `12345678`) |
 | `disp=720\|off` | Display mode |
 
 ## On the device
@@ -482,23 +489,25 @@ unsigned images unless given `-k`, which is also how you install one you built
 yourself:
 
 ```bash
-sysupgrade -k http://192.168.1.9:8000/uImage-sdk
+sysupgrade -k http://192.168.1.9:8000/uImage
 ```
 
 To sign a local build so `-k` is not needed:
 
 ```bash
-sha256sum output/uImage-sdk | cut -c1-64 | tr -d '\n' | xxd -r -p > /tmp/d.bin
+sha256sum output/uImage | cut -c1-64 | tr -d '\n' | xxd -r -p > /tmp/d.bin
 openssl pkeyutl -sign -rawin -inkey ~/.config/nvr-signing/signing.key \
-  -in /tmp/d.bin -out output/uImage-sdk.sig
+  -in /tmp/d.bin -out output/uImage.sig
 ```
 
 `sysupgrade` looks for `<image>.sig` next to the image, at the same URL or path.
+This is what `build-buildroot.sh` already does at the end of a build, so a
+locally built image is normally signed before you ever see it.
 
 ### Building U-Boot
 
 `build-uboot.sh` is a separate build path for the IPL_CUST-loaded bootloader;
-`build-sdk.sh` and `sysupgrade` never write it. It builds the patched
+`build-buildroot.sh` and `sysupgrade` never write it. It builds the patched
 Infinity2M source with the bundled ARM 8.2 toolchain, omitting vendor display
 and SD/MMC boot UI drivers that do not build for this SoC and are not needed to
 load the Linux image from SPI NOR. Its compiled fallback environment is the
@@ -558,17 +567,16 @@ use `mi-player -u 5600`.
 
 ```
 fetch-deps.sh       download the public prerequisites into build/
-build-sdk.sh        main build: kernel, initramfs, MI stack, players
+build-buildroot.sh  main build: kernel, rootfs, MI stack, players
 build-uboot.sh      isolated Infinity2M U-Boot build; produces no flash writes
-build-wfb.sh        wfb-ng binaries
-build-apfpv.sh      wpa_supplicant and Wi-Fi client pieces
+buildroot-ext/      buildroot external tree: defconfig, packages, rootfs overlay
 src/mi-player.c     RTSP/UDP/file -> MI_VDEC -> MI_DIVP -> MI_DISP -> HDMI
 src/mi-disp-init.c  display and HDMI bring-up, raw MI_HDMI ioctls
 src/fb-splash.c     framebuffer splash and status overlay
 src/wifi-monitor.c  monitor mode and sniffing, no external dependencies
-assets/test720.h264 720p Baseline 4:2:0 clip for decoding without a network
-config/             BusyBox and kernel configuration
-patches/            device tree and platform patches
+assets/test720.h264 720p Baseline 4:2:0 clip for `mi-player -f`, no network
+vendor/             XiongMai MI blobs and stock /config, see vendor/README.md
+patches/            vendor kernel, U-Boot and driver patches
 docs/               design notes not needed to build or flash
 ```
 
@@ -599,14 +607,6 @@ sf write 0x21000000 0 0x1000000
 
 The only unrecoverable failure is corrupting the bootloader itself, which needs
 a SPI flash programmer.
-
-## Legacy
-
-`build.sh`, `usb-rootfs/`, `rootfs-overlay/` and `.github/workflows/build.yml`
-belong to an earlier attempt using the linux-chenxing 6.5 kernel. That track was
-abandoned: mainline has no display or VPU support for Infinity2M, so HDMI is
-dead there. They are kept for reference only and are not built by
-`build-sdk.sh`.
 
 ## Credits
 

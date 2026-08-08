@@ -1,12 +1,11 @@
 #!/bin/sh
 # Buildroot track for the ground station.
 #
-# Experimental and parallel to build-sdk.sh, which is still the script that
-# produces flashable images. Nothing here writes to output/.
+# This is the build. It produces the flashable, signed uImage in output/.
 #
 # The kernel is the vendor SigmaStar 4.9.84 tree, handed to buildroot through
-# LINUX_OVERRIDE_SRCDIR so nothing is downloaded and the tree stays the one
-# build-sdk.sh has been building all along.
+# LINUX_OVERRIDE_SRCDIR so nothing is downloaded and the vendor tree is only
+# ever read from.
 set -e
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -55,8 +54,7 @@ fi
 export PATH=$HOSTBIN:$BUILD_DIR/shim:$PATH
 
 # ── Vendor kernel patches ─────────────────────────────────────────────────────
-# Same three patches, same guards, as build-sdk.sh. Kept here too so this track
-# works on a tree that build-sdk.sh has never touched.
+# Guarded, so a tree that has already been patched is left alone.
 echo "=== [1/3] Patching the SigmaStar kernel tree ==="
 
 # $1 = marker to test for, $2 = file to test it in, $3 = patch file
@@ -81,8 +79,8 @@ fi
 
 # ── Point buildroot at the vendor tree ────────────────────────────────────────
 # Buildroot rsyncs this into its own build dir and builds there, so the SDK
-# tree is only ever read. Build products are excluded so a tree that
-# build-sdk.sh has already compiled in does not carry stale objects across.
+# tree is only ever read. Build products are excluded so a tree that has
+# already been compiled in does not carry stale objects across.
 echo "=== [2/3] Writing $BUILD_DIR/local.mk ==="
 cat > $BUILD_DIR/local.mk <<EOF
 LINUX_OVERRIDE_SRCDIR = $KERNEL_DIR
@@ -101,6 +99,14 @@ make -C $BR_DIR O=$BR_OUT BR2_EXTERNAL=$EXT_DIR ssr621q_fpv_defconfig
 rm -f $BR_OUT/build/linux-custom/.stamp_rsynced
 make -C $BR_OUT -j$JOBS
 
+# post-image.sh has already validated and signed these; copy them out under the
+# stable names the flashing instructions and CI refer to.
+mkdir -p $SCRIPT_DIR/output
+cp $BR_OUT/images/uImage     $SCRIPT_DIR/output/uImage
+cp $BR_OUT/images/uImage.sig $SCRIPT_DIR/output/uImage.sig
+
 echo
 echo "images:"
 ls -la $BR_OUT/images/
+echo
+echo "flashable: output/uImage ($(stat -c %s $SCRIPT_DIR/output/uImage) bytes)"

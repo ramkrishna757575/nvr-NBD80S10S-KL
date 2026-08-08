@@ -1,7 +1,7 @@
 # ── Build trees and outputs ──────────────────────────────────────────────────
 # build/ holds everything fetched or unpacked: the SigmaStar SDK, toolchains,
-# BusyBox, the RTL8812AU driver, the Alkaid SDK and the vendor firmware dumps.
-# All of it is reproducible from build-sdk.sh, and it runs to several GB.
+# buildroot, the RTL8812AU driver and the vendor firmware dumps.
+# All of it is reproducible from fetch-deps.sh, and it runs to several GB.
 build/
 output/
 logs/
