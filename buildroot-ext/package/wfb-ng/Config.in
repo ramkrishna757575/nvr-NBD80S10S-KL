@@ -1,0 +1,15 @@
+config BR2_PACKAGE_WFB_NG
+	bool "wfb-ng"
+	select BR2_PACKAGE_LIBSODIUM
+	select BR2_PACKAGE_LIBPCAP
+	select BR2_PACKAGE_LIBEVENT
+	depends on BR2_INSTALL_LIBSTDCPP
+	help
+	  wfb-ng receive stack: wfb_rx, wfb_tx, wfb_keygen and wfb_tun.
+
+	  Only the C/C++ binaries are built. Upstream's "all" target also
+	  builds a Python service layer and a venv, none of which the ground
+	  station uses.
+
+comment "wfb-ng needs a toolchain with C++ support"
+	depends on !BR2_INSTALL_LIBSTDCPP

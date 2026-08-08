@@ -1,3 +1,4 @@
 source "$BR2_EXTERNAL_SSR621Q_FPV_PATH/package/sigmastar-mi/Config.in"
 source "$BR2_EXTERNAL_SSR621Q_FPV_PATH/package/gs-tools/Config.in"
 source "$BR2_EXTERNAL_SSR621Q_FPV_PATH/package/rtl8812au/Config.in"
+source "$BR2_EXTERNAL_SSR621Q_FPV_PATH/package/wfb-ng/Config.in"

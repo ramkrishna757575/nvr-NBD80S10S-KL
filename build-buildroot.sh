@@ -19,7 +19,19 @@ KERNEL_DIR=$SDK_ROOT/sigmastar/kernel/4.9.84
 TOOLCHAIN_BIN=$BUILD_DIR/toolchain/armv7-eabihf--glibc--stable-2018.11-1/bin
 JOBS=$(nproc)
 
-for d in "$BR_DIR" "$KERNEL_DIR" "$TOOLCHAIN_BIN"; do
+# 2025.02 LTS rather than something older: host gcc 15 cannot compile the
+# m4 1.4.19 that buildroot 2023.02 pins, and m4 is pulled in by libpcap through
+# bison and flex. 2025.02 carries m4 1.4.21 and still offers the gcc 7.x and
+# 4.1-headers external toolchain options this board needs.
+BUILDROOT_REF=2025.02.x
+
+if [ ! -d "$BR_DIR" ]; then
+    echo "=== Fetching buildroot $BUILDROOT_REF ==="
+    git clone --depth 1 --branch $BUILDROOT_REF \
+        https://github.com/buildroot/buildroot.git "$BR_DIR"
+fi
+
+for d in "$KERNEL_DIR" "$TOOLCHAIN_BIN"; do
     [ -d "$d" ] || { echo "error: missing $d -- run fetch-deps.sh first" >&2; exit 1; }
 done
 
@@ -29,8 +41,18 @@ done
 # the toolchain's bin directory off PATH entirely and let the host tools win.
 PATH=$(printf '%s' "$PATH" | tr ':' '\n' |
        grep -v 'armv7-eabihf--glibc--stable-2018.11-1' | paste -sd:)
+
+# This distribution's /usr/bin/install is uutils, which buildroot refuses over
+# a known bug (uutils/coreutils#12166). GNU install is here as gnuinstall, so
+# shadow it rather than asking for update-alternatives and root.
+HOSTBIN=$BUILD_DIR/hostbin
+mkdir -p $HOSTBIN
+if [ -x /usr/bin/gnuinstall ]; then
+    ln -sf /usr/bin/gnuinstall $HOSTBIN/install
+fi
+
 # build/shim/python is a symlink to python3, so the kernel Makefile finds a "python".
-export PATH=$BUILD_DIR/shim:$PATH
+export PATH=$HOSTBIN:$BUILD_DIR/shim:$PATH
 
 # ── Vendor kernel patches ─────────────────────────────────────────────────────
 # Same three patches, same guards, as build-sdk.sh. Kept here too so this track
