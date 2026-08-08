@@ -337,10 +337,13 @@ would fly, but nothing is reimplemented.
 ### Adaptive link
 
 `alink = 1` scores the downlink and reports it to `alink_drone` on the air unit,
-which raises or lowers its MCS and bitrate to match. It is off by default, and
-should stay off until the air side is confirmed: `alink_drone` falls back to MCS
-0 and its lowest bitrate about a second after the reports stop, so a half-working
-uplink is worse than none.
+which raises or lowers its MCS and bitrate to match. On by default: on the bench
+it took the air unit from MCS 2 to MCS 4, 12.6 to 23.9 Mbit/s, with nothing lost
+and no decrypt errors. Set it to `0` if this ground station must never transmit.
+
+It costs nothing when the air unit is not listening. The failure it used to
+invite -- `alink_drone` falling back to MCS 0 and its lowest bitrate about a
+second after the reports stop -- is why the sender runs supervised.
 
 The reports ride the same tunnel pair OpenIPC already uses, mirrored — this
 board transmits on `alink_tx_radio_port` (160) and listens on
@@ -358,6 +361,10 @@ tunnel, in that order.
 Requires `CONFIG_TUN` and `/dev/net/tun`, both of which this image builds in. If
 any piece is missing `wfb-start` says so and carries on without it — video does
 not depend on any of this.
+
+`/mnt/cfg/wfb.conf` survives a `sysupgrade`, so a board flashed from an older
+image keeps its old config and none of the `alink_*` keys appear in it. Add them
+by hand, or reinstall with `sysupgrade -c` to start from the current defaults.
 
 ### No picture
 

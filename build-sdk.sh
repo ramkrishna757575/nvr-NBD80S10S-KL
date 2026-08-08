@@ -1612,14 +1612,19 @@ video_size = 1920x1080
 
 # Adaptive link. Scores the downlink and reports it to the air unit, which raises
 # or lowers its MCS and bitrate to suit. Needs alink_drone running there, and an
-# mirrored WFB tunnel. It stays disabled until the image has been flashed and
-# the paired air-side tunnel is confirmed; alink_drone drops to MCS 0 when its
-# reports stop arriving.
+# uplink to carry the reports -- on this board that is a mirrored WFB tunnel,
+# started automatically. Measured on the bench: MCS 2 -> 4, 12.6 -> 23.9 Mbps.
+#
+# On by default. It costs nothing when the air unit is not listening, and the
+# failure it used to invite -- alink_drone dropping to MCS 0 when the reports
+# stop -- is now covered by a supervisor that restarts the sender.
+#
+# Set to 0 if this ground station must never transmit.
 #
 # alink_ip/alink_port are where the reports go. 10.5.0.10:9999 is alink_drone's
 # default over the wfb tunnel; for the tunnel-free path, point these at the local
 # wfb_tx and have the air unit's wfb_rx deliver to 127.0.0.1:9999.
-alink = 0
+alink = 1
 alink_ip = 10.5.0.10
 alink_port = 9999
 alink_tun_name = wfb-gs
