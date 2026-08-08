@@ -185,14 +185,24 @@ removes the blocker, it does not by itself justify changing the shipped build.
 > kernel. OpenIPC instead *patches* their kernel fork to build with a current
 > toolchain.
 
-**Out-of-tree builds do not work.** `make O=...` dies in
-`arch/arm/mach-sstar/Kconfig` with "recursive inclusion detected" and a tell-tale
-`mach-sstar//Kconfig` double slash -- a path variable that is empty unless the
-build runs in the source tree. Anything that assumes `O=` needs this fixed first.
+**Out-of-tree builds do not work — but buildroot does not need them.**
 
-*Diagnosed 2026-08-08, and it is a series of one-line fixes rather than a wall.*
-Buildroot builds the kernel with `O=`, so this has to be dealt with. The tree
-assumes its working directory is the source tree in at least six places:
+Checked in `linux/linux.mk`: buildroot builds the kernel with `-C $(@D)`, in the
+package's own extracted source directory, in tree. Its top-level Makefile is
+explicit that the `O=` it uses for its *own* output is deliberately not passed
+down to packages. So the SigmaStar tree gets built exactly the way
+`build-sdk.sh` builds it today, and none of the below blocks the port.
+
+Kept because it is still true of the tree, and will bite anyone who tries `O=`
+by hand. `make O=...` dies in `arch/arm/mach-sstar/Kconfig` with "recursive
+inclusion detected" and a tell-tale `mach-sstar//Kconfig` double slash. The
+cause is not recursion: `.sstar_chip.txt` is read by a relative path, so from an
+output directory it comes back empty, `SSTAR_CHIP_MODEL` with it, then the
+`SSTAR_CHIP_FOLDER` env symbol and `SSTAR_CHIP_NAME`, and
+`source "arch/arm/mach-sstar/$SSTAR_CHIP_NAME/Kconfig"` collapses onto its own
+directory.
+
+Six places assume the working directory is the source tree:
 
 | where | what |
 | --- | --- |
@@ -203,21 +213,11 @@ assumes its working directory is the source tree in at least six places:
 | `arch/arm/boot/Makefile:22` | `MKIMAGE_BIN = scripts/mkimage` |
 | `arch/arm/boot/Makefile:87,95` | `python scripts/ms_builtin_dtb_update.py` |
 
-The chip file is the root of the confusing error: it feeds `SSTAR_CHIP_MODEL` ->
-the `SSTAR_CHIP_FOLDER` env symbol -> `SSTAR_CHIP_NAME`, which Kconfig expands in
-`source "arch/arm/mach-sstar/$SSTAR_CHIP_NAME/Kconfig"`. Read it by a relative
-path from an output directory and it comes back empty, so the source path
-collapses onto the directory itself and kconfig reports recursion, not a missing
-file.
-
-With those prefixed `$(srctree)/`, **the kernel compiles cleanly out of tree** --
-`exit 0`, `zImage is ready`, `Image` 3,887,104 bytes, zero errors.
-
-What still does not run out of tree is SigmaStar's post-processing: `MKIMAGE_BIN`
-and `SS_DTB_NAME` are both relative, so the BNDTB step and the uImage wrapper are
-silently skipped -- the build "succeeds" and produces no uImage. Note these two
-need *different* prefixes: the script lives in `$(srctree)`, the generated `.dtb`
-in `$(objtree)`. A blanket `$(srctree)/` would be wrong.
+With the first four prefixed `$(srctree)/` the kernel compiles clean out of tree
+(`exit 0`, `Image` 3,887,104 bytes, zero errors), but `MKIMAGE_BIN` and
+`SS_DTB_NAME` are relative too, so BNDTB and the uImage wrapper are silently
+skipped and the build "succeeds" with no uImage. Those two need *different*
+prefixes -- the script is in `$(srctree)`, the generated `.dtb` in `$(objtree)`.
 
 **The kernel tree is not clean.** `build/sdk` is a dirty checkout with hand
 edits. Before packaging it, diff against pristine upstream and turn every local
