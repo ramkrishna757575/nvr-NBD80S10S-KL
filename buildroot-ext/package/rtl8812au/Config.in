@@ -1,0 +1,7 @@
+config BR2_PACKAGE_RTL8812AU
+	bool "rtl8812au (wfb-ng fork)"
+	depends on BR2_LINUX_KERNEL
+	help
+	  Realtek 8812AU driver, wfb-ng fork, providing the monitor-mode and
+	  packet-injection behaviour wfb-ng needs. Built out of tree against
+	  the kernel buildroot just compiled.
