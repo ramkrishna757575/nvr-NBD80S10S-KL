@@ -165,17 +165,30 @@ same shape as ours, and the same CPU family as the SSR621Q.
 
 ## The hard parts
 
-**Toolchain.** We pin gcc 7.3.0 (Bootlin) because a modern gcc cannot build a 4.9
-kernel. OpenIPC instead *patches* their kernel fork to build with a current
-toolchain. Two options:
+**Toolchain — answered 2026-08-08, and the answer is good.** The premise below
+was wrong: **gcc 8.2 builds this kernel cleanly.** Zero errors, zero warnings,
+`zImage is ready`, both for the plain `infinity2m_ssc010a_s01a_defconfig` and for
+our production config with USB, CFG80211, NET_CORE and TUN added. gcc 8 is
+exactly what OpenIPC's NVR target uses (`BR2_GCC_VERSION_8_X=y`), so buildroot's
+own toolchain should work with no kernel patch list at all.
 
-- point buildroot at our Bootlin 7.3 toolchain as an external toolchain — easy,
-  but diverges from how OpenIPC does it
-- patch the SigmaStar kernel for modern gcc — real work. This tree is heavily
-  vendor-modified; it already needed fixes to three separate python2 scripts
-  before it would build at all.
+Method, if it needs repeating: copy the kernel tree, `mrproper`, then build with
+`build/toolchain/gcc-arm-8.2-2018.08-x86_64-arm-linux-gnueabihf` (already present
+for U-Boot). Host tools need `HOSTCFLAGS='-O2 -fcommon -w'` under a current host
+gcc; that is a host-side concern, unrelated to the target compiler.
 
-Resolve this first. Everything else is mechanical by comparison.
+Not tested: gcc 13/15, the two Wi-Fi drivers under gcc 8, and booting a gcc-8
+kernel on hardware. The pin to 7.3 stays until those are done -- this experiment
+removes the blocker, it does not by itself justify changing the shipped build.
+
+> We pin gcc 7.3.0 (Bootlin) because a modern gcc cannot build a 4.9
+> kernel. OpenIPC instead *patches* their kernel fork to build with a current
+> toolchain.
+
+**Out-of-tree builds do not work.** `make O=...` dies in
+`arch/arm/mach-sstar/Kconfig` with "recursive inclusion detected" and a tell-tale
+`mach-sstar//Kconfig` double slash -- a path variable that is empty unless the
+build runs in the source tree. Anything that assumes `O=` needs this fixed first.
 
 **The kernel tree is not clean.** `build/sdk` is a dirty checkout with hand
 edits. Before packaging it, diff against pristine upstream and turn every local
@@ -226,21 +239,14 @@ Neither depends on the port, and both survive it.
 
 ### Phase 1 — answer the toolchain question, alone
 
-Everything else rests on this and it is testable without committing to anything:
+**Done, 2026-08-08. gcc 8.2 builds the kernel with zero errors** — defconfig and
+our production config alike. See "The hard parts" above for the method and for
+what was *not* tested. Buildroot can use its own gcc 8 rather than being pointed
+at our Bootlin 7.3, and no `EXT_HISI_PATCHER`-style patch list appears to be
+needed for the compiler.
 
-**Does the SigmaStar 4.9.84 kernel build with a modern gcc?**
-
-We pin gcc 7.3 because a modern gcc could not build it. OpenIPC's NVR target uses
-buildroot's own gcc 8 and carries a kernel patch list to make old trees build. So
-either:
-
-- point buildroot at our Bootlin 7.3 toolchain as an external toolchain — works,
-  diverges from how they do it; or
-- patch the kernel for a newer gcc, as their `EXT_HISI_PATCHER` list does.
-
-Test it standalone: build the current kernel with gcc 8 and collect the errors.
-If the list is short, the port is straightforward. If it is not, use the external
-toolchain and move on — do not let this become the project.
+The question this was gating — is the port a week or a month — now leans towards
+the former, at least for the kernel.
 
 ### Phase 2 — make the vendor tree reproducible
 
