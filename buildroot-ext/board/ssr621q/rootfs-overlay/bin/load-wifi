@@ -6,8 +6,16 @@ DIR=/lib/modules/wifi
 # adapter then either sees nothing or catches a stray beacon on a passive scan
 # and goes dormant instead of associating. The driver takes an alpha2 directly,
 # so this works without CRDA or a regulatory.db.
+#
+# /etc/wifi-cc wins so a recovery shell can override without editing config.
+# The resolved value is written back to it, because that is where apfpv and
+# anything else started later look.
 CC=$(cat /etc/wifi-cc 2>/dev/null)
+[ -n "$CC" ] || CC=$(sed -n 's/^[[:space:]]*region[[:space:]]*=[[:space:]]*\([A-Za-z0-9][A-Za-z0-9]\).*/\1/p' \
+                     /etc/wfb.conf 2>/dev/null | head -1)
+CC=$(echo "$CC" | tr 'a-z' 'A-Z')
 [ -n "$CC" ] || CC=00
+echo "$CC" > /etc/wifi-cc 2>/dev/null
 
 if grep -qE "^(88XXau_wfb|8812eu) " /proc/modules; then
     echo "wifi driver already loaded"

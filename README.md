@@ -204,11 +204,6 @@ name in the router's client list. The address is also printed on the serial
 console when the lease arrives and displayed on the HDMI overlay. With no DHCP
 server on the link it falls back to `192.168.1.10`.
 
-Pass `ipaddr=A.B.C.D` on the kernel command line for a fixed address instead.
-If you do, keep it outside the router's DHCP pool — otherwise the pool can
-lease that same address to another device while the board is off, and SSH
-then reaches the wrong host.
-
 The MAC comes from U-Boot's `ethaddr`, which only reaches the kernel if bootargs
 are built *inside* `setargs` (U-Boot expands `${}` one level only). Without it
 the board uses the locally administered address cached in `.fallback-mac`.
@@ -241,16 +236,29 @@ reboot
 | `key` | wfb key pair, generated on first use if absent |
 | `codec`, `video_size` | wfb mode; what the air unit transmits. Nothing announces it over wfb, so it has to be stated |
 | `ssid`, `psk` | apfpv mode |
-| `region` | regulatory domain, two-letter country code |
+| `region` | regulatory domain, two-letter country code. Passed to the driver as `rtw_country_code` when it loads, so a change needs a reboot. `iw reg get` still reports `00` — see below |
 
 Precedence is built-in default, then this file, then the kernel command line —
-so `link=`, `apfpv_ssid=`, `apfpv_psk=` and `wifi_cc=` still override it. That
+so `link=`, `apfpv=off`, `disp=` and `mi_set=` still override it. That
 matters when a bad edit leaves the board unable to see the drone: the command
 line needs no working filesystem.
 
 `apfpv` and `wfb` are mutually exclusive — one needs the adapter in managed
 mode, the other in monitor mode — so exactly one runs, and switching means a
 reboot.
+
+#### Regulatory domain
+
+`region` reaches the adapter as the driver's own `rtw_country_code`, and the
+driver's internal table is what limits its channels and transmit power.
+
+The kernel's cfg80211 domain is a separate mechanism and stays at `00`
+regardless: resolving a country code into rules needs a `regulatory.db` or
+CRDA, and this image ships neither — `iw reg set IN` is accepted and then
+silently ignored. So `iw reg get` reporting `country 00: DFS-UNSET`, and
+`iw phy` marking 5825 MHz `no IR`, are both expected and do not mean `region`
+was ignored. wfb transmits there anyway because monitor-mode injection is not
+gated by the IR flag.
 
 ### Pairing with a wfb-ng air unit
 

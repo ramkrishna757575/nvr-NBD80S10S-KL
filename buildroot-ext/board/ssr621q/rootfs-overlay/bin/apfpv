@@ -106,8 +106,8 @@ if ! wpa_cli -i $IFACE status 2>/dev/null | grep -q "wpa_state=COMPLETED"; then
     echo "apfpv: regulatory domain $(cat /etc/wifi-cc 2>/dev/null)"
     echo "apfpv: wpa_state=$(wpa_cli -i $IFACE status 2>/dev/null | sed -n 's/^wpa_state=//p')"
     grep -iE "auth|assoc|reason|WRONG_KEY|4-Way" /tmp/wpa.log 2>/dev/null | tail -5
-    echo "apfpv: if the AP is 5GHz, set the regulatory domain: wifi_cc=XX on the"
-    echo "apfpv: kernel command line (default 00 blocks most 5GHz channels)"
+    echo "apfpv: if the AP is 5GHz, set the regulatory domain: region = XX in"
+    echo "apfpv: /mnt/cfg/wfb.conf (default 00 blocks most 5GHz channels)"
 
     # Pick the most specific explanation available for the overlay.
     REASON=$(grep -oiE "WRONG_KEY|4-Way handshake failed|authentication.*timed out|association.*timed out" \

@@ -66,4 +66,9 @@ psk = 12345678
 # Regulatory domain, as a two-letter country code. The default 00 is the world
 # domain, which forbids transmitting on most 5GHz channels -- a 5GHz air unit
 # will not associate reliably until this is set to your own country.
+# Handed to the driver as rtw_country_code when it loads, so changing this
+# takes a reboot. The driver's own table is what governs its channels and TX
+# power. The kernel's cfg80211 domain is a separate thing and stays at 00:
+# there is no regulatory.db and no CRDA on this image, so `iw reg get` keeps
+# reporting country 00 however this is set. That is expected, not a failure.
 region = 00
