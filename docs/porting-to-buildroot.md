@@ -204,6 +204,19 @@ also runs `ms_builtin_dtb_update.py`, which patches the board DTB into `Image` â
 skipping it produces a kernel that will not boot. See `build-sdk.sh` for the
 detail; this cost real debugging time.
 
+*Solvable, checked 2026-08-08.* Buildroot separates the target it invokes from
+the file it collects:
+
+```
+BR2_LINUX_KERNEL_IMAGE_TARGET_CUSTOM=y
+BR2_LINUX_KERNEL_IMAGE_TARGET_NAME="zImage"   # runs SigmaStar's rule + BNDTB
+BR2_LINUX_KERNEL_IMAGE_NAME="uImage"          # collects what that rule wrote
+```
+
+So do not select `BR2_LINUX_KERNEL_UIMAGE`. Verify the result the same way
+`build-sdk.sh` does: the uImage payload size must equal `arch/arm/boot/Image`,
+which is what distinguishes it from a zImage wrapper.
+
 **Blob provenance.** OpenIPC does redistribute vendor blobs, so this is not the
 hard blocker it first appears. But theirs come from vendor-published SDK
 tarballs, while ours were extracted from a device's own flash â€” murkier, and
