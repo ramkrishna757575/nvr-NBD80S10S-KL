@@ -334,6 +334,31 @@ For the real thing, `wfb_rx -f` forwards raw packets to a PC running the full
 wfb-ng stack. That needs a PC attached, so it is a bench tool rather than how you
 would fly, but nothing is reimplemented.
 
+### Adaptive link
+
+`alink = 1` scores the downlink and reports it to `alink_drone` on the air unit,
+which raises or lowers its MCS and bitrate to match. It is off by default, and
+should stay off until the air side is confirmed: `alink_drone` falls back to MCS
+0 and its lowest bitrate about a second after the reports stop, so a half-working
+uplink is worse than none.
+
+The reports ride the same tunnel pair OpenIPC already uses, mirrored — this
+board transmits on `alink_tx_radio_port` (160) and listens on
+`alink_rx_radio_port` (32), the opposite of the air unit. `wfb_tun` puts a
+`wfb-gs` interface at `alink_tun_addr` so the air unit's `10.5.0.10:9999` is
+directly reachable. The uplink `wfb_tx` runs `-k 1 -n 1`: reports are sparse, and
+the default 8/12 FEC block would sit half-empty waiting for traffic that never
+comes.
+
+`alink-gs` runs under a supervisor that restarts it if it exits, because losing
+the sender silently pins the aircraft at its slowest rate for the rest of the
+flight. `wfb-stop` tears down the supervisor, the sender, both radio ends and the
+tunnel, in that order.
+
+Requires `CONFIG_TUN` and `/dev/net/tun`, both of which this image builds in. If
+any piece is missing `wfb-start` says so and carries on without it — video does
+not depend on any of this.
+
 ### No picture
 
 Three different faults produce a green screen, and they look identical:

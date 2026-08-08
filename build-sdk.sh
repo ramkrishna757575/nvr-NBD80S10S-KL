@@ -315,7 +315,7 @@ cp -a $MI_OUT/config/. $INITRAMFS_DIR/config/
 # the network); staged here only if present, so build-sdk.sh stays offline.
 WFB_BIN=$BUILD_DIR/wfb-out/bin
 if [ -d $WFB_BIN ]; then
-    for b in wfb_rx wfb_tx wfb_keygen; do
+    for b in wfb_rx wfb_tx wfb_keygen wfb_tun; do
         [ -f $WFB_BIN/$b ] && cp $WFB_BIN/$b $INITRAMFS_DIR/bin/
     done
     echo "wfb-ng: staged $(ls $INITRAMFS_DIR/bin/wfb_* 2>/dev/null | wc -l) binaries"
@@ -880,6 +880,12 @@ KEY=$(get key);             [ -n "$KEY" ]        || KEY=/mnt/cfg/wfb/gs.key
 ALINK=$(get alink);         [ -n "$ALINK" ]      || ALINK=0
 ALINK_IP=$(get alink_ip);   [ -n "$ALINK_IP" ]   || ALINK_IP=10.5.0.10
 ALINK_PORT=$(get alink_port); [ -n "$ALINK_PORT" ] || ALINK_PORT=9999
+ALINK_TUN_NAME=$(get alink_tun_name); [ -n "$ALINK_TUN_NAME" ] || ALINK_TUN_NAME=wfb-gs
+ALINK_TUN_ADDR=$(get alink_tun_addr); [ -n "$ALINK_TUN_ADDR" ] || ALINK_TUN_ADDR=10.5.0.1/24
+ALINK_TX_PORT=$(get alink_tx_port); [ -n "$ALINK_TX_PORT" ] || ALINK_TX_PORT=5800
+ALINK_RX_PORT=$(get alink_rx_port); [ -n "$ALINK_RX_PORT" ] || ALINK_RX_PORT=5801
+ALINK_TX_RADIO_PORT=$(get alink_tx_radio_port); [ -n "$ALINK_TX_RADIO_PORT" ] || ALINK_TX_RADIO_PORT=160
+ALINK_RX_RADIO_PORT=$(get alink_rx_radio_port); [ -n "$ALINK_RX_RADIO_PORT" ] || ALINK_RX_RADIO_PORT=32
 
 [ -d /sys/class/net/$IFACE ] || load-wifi || exit 1
 
@@ -936,13 +942,43 @@ $2 == "PKT" {
 echo $! > /tmp/wfb.pid
 sleep 2
 
-# Adaptive link reporting. Started after wfb_rx because it reads the status file
-# wfb_rx's output produces, and sends nothing until that file describes a link
-# actually carrying video.
-if [ "$ALINK" = "1" ] && [ -x /usr/bin/alink-gs ]; then
-    alink-gs -i "$ALINK_IP" -p "$ALINK_PORT" &
-    echo $! > /tmp/alink.pid
-    echo "wfb: adaptive link reporting to $ALINK_IP:$ALINK_PORT"
+# Adaptive link reports use the same WFB tunnel pair as OpenIPC: ground TX 160
+# reaches the air RX, while air TX 32 reaches this receiver. A single-packet
+# FEC block is essential here: control reports are sparse and must not wait for
+# a video-sized block to fill.
+if [ "$ALINK" = "1" ]; then
+    if [ ! -x /bin/wfb_tun ] || [ ! -x /bin/wfb_tx ] || [ ! -x /bin/wfb_rx ] || \
+       [ ! -x /usr/bin/alink-gs ] || [ ! -c /dev/net/tun ]; then
+        echo "wfb: adaptive link unavailable (missing tunnel, WFB binary, or /dev/net/tun)"
+    else
+        wfb_tun -t "$ALINK_TUN_NAME" -a "$ALINK_TUN_ADDR" \
+                -l "$ALINK_RX_PORT" -u "$ALINK_TX_PORT" &
+        echo $! > /tmp/alink-tun.pid
+        wfb_tx -K "$KEY" -k 1 -n 1 -u "$ALINK_TX_PORT" \
+               -p "$ALINK_TX_RADIO_PORT" -i "$LINK_ID" "$IFACE" &
+        echo $! > /tmp/alink-tx.pid
+        wfb_rx -K "$KEY" -c 127.0.0.1 -u "$ALINK_RX_PORT" \
+               -p "$ALINK_RX_RADIO_PORT" -i "$LINK_ID" "$IFACE" &
+        echo $! > /tmp/alink-rx.pid
+        sleep 1
+        if kill -0 "$(cat /tmp/alink-tun.pid)" 2>/dev/null && \
+           kill -0 "$(cat /tmp/alink-tx.pid)" 2>/dev/null && \
+           kill -0 "$(cat /tmp/alink-rx.pid)" 2>/dev/null; then
+            (
+                while :; do
+                    alink-gs -i "$ALINK_IP" -p "$ALINK_PORT" &
+                    echo $! > /tmp/alink-worker.pid
+                    wait "$!"
+                    echo "wfb: alink-gs exited; restarting"
+                    sleep 1
+                done
+            ) &
+            echo $! > /tmp/alink-supervisor.pid
+            echo "wfb: adaptive link tunnel $ALINK_TUN_ADDR, reporting to $ALINK_IP:$ALINK_PORT"
+        else
+            echo "wfb: adaptive link transport failed to start"
+        fi
+    fi
 fi
 
 # Start the player on a real event, as the apfpv path does with the DHCP lease.
@@ -1003,9 +1039,17 @@ chmod +x /usr/bin/wfb-start
 
 cat > /usr/bin/wfb-stop << 'INNER'
 #!/bin/sh
-[ -f /tmp/alink.pid ] && kill "$(cat /tmp/alink.pid)" 2>/dev/null
+# Supervisor before worker: killing the worker while its parent is still in
+# wait() only makes the parent start another one.
+[ -f /tmp/alink-supervisor.pid ] && kill "$(cat /tmp/alink-supervisor.pid)" 2>/dev/null
+[ -f /tmp/alink-worker.pid ] && kill "$(cat /tmp/alink-worker.pid)" 2>/dev/null
 killall alink-gs 2>/dev/null
-rm -f /tmp/alink.pid
+[ -f /tmp/alink-rx.pid ] && kill "$(cat /tmp/alink-rx.pid)" 2>/dev/null
+[ -f /tmp/alink-tx.pid ] && kill "$(cat /tmp/alink-tx.pid)" 2>/dev/null
+[ -f /tmp/alink-tun.pid ] && kill "$(cat /tmp/alink-tun.pid)" 2>/dev/null
+killall wfb_tx wfb_tun 2>/dev/null
+rm -f /tmp/alink-worker.pid /tmp/alink-supervisor.pid /tmp/alink-rx.pid \
+    /tmp/alink-tx.pid /tmp/alink-tun.pid
 [ -f /tmp/wfb.pid ] && kill "$(cat /tmp/wfb.pid)" 2>/dev/null
 killall wfb_rx 2>/dev/null
 rm -f /tmp/wfb.pid
@@ -1545,9 +1589,9 @@ video_size = 1920x1080
 
 # Adaptive link. Scores the downlink and reports it to the air unit, which raises
 # or lowers its MCS and bitrate to suit. Needs alink_drone running there, and an
-# uplink to carry the reports -- this board has never transmitted, so it is off
-# until that is proven. Turning it on without a working uplink is worse than
-# leaving it off: alink_drone drops to MCS 0 when the reports stop arriving.
+# mirrored WFB tunnel. It stays disabled until the image has been flashed and
+# the paired air-side tunnel is confirmed; alink_drone drops to MCS 0 when its
+# reports stop arriving.
 #
 # alink_ip/alink_port are where the reports go. 10.5.0.10:9999 is alink_drone's
 # default over the wfb tunnel; for the tunnel-free path, point these at the local
@@ -1555,6 +1599,12 @@ video_size = 1920x1080
 alink = 0
 alink_ip = 10.5.0.10
 alink_port = 9999
+alink_tun_name = wfb-gs
+alink_tun_addr = 10.5.0.1/24
+alink_tx_port = 5800
+alink_rx_port = 5801
+alink_tx_radio_port = 160
+alink_rx_radio_port = 32
 
 # --- apfpv mode only ---
 ssid = OpenIPC
@@ -2225,6 +2275,8 @@ cat > $INITRAMFS_NODES << 'EOF'
 nod /dev/console 0600 0 0 c 5 1
 nod /dev/null 0666 0 0 c 1 3
 nod /dev/tty 0666 0 0 c 5 0
+dir /dev/net 0755 0 0
+nod /dev/net/tun 0660 0 0 c 10 200
 EOF
 
 # ── Kernel ────────────────────────────────────────────────────────────────────
@@ -2286,9 +2338,11 @@ PYEOF
 
 # A known-good 720p Annex-B clip (SPS/PPS/IDR, 90 access units) so the decoder
 # can be tested without the network or the RTP depacketiser in the path.
-if [ -f $SCRIPT_DIR/assets/test720.h264 ]; then
+if [ "${INCLUDE_VDEC_TEST_ASSET:-0}" = 1 ] && [ -f $SCRIPT_DIR/assets/test720.h264 ]; then
     mkdir -p $INITRAMFS_DIR/usr/share
     cp $SCRIPT_DIR/assets/test720.h264 $INITRAMFS_DIR/usr/share/
+else
+    echo "decoder test clip: omitted (set INCLUDE_VDEC_TEST_ASSET=1 to stage it)"
 fi
 
 # Fallback MAC, used only if U-Boot did not pass ethaddr= on the command line.
@@ -2332,12 +2386,18 @@ echo "initramfs: $(du -sh $INITRAMFS_DIR | cut -f1) after stripping"
 # ieee80211 symbols and 12 usb_* symbols; the defconfig has both as =m, and we
 # build no kernel modules of our own, so as modules they would simply be absent.
 # Building them in also avoids any insmod ordering issues on the target.
+#
+# NET_CORE has to be named explicitly even though only TUN is wanted: TUN sits
+# inside `if NET_CORE` in drivers/net/Kconfig, and this defconfig leaves it off,
+# so olddefconfig silently drops CONFIG_TUN when only TUN is enabled.
 ./scripts/config --enable USB \
                  --enable USB_COMMON \
                  --enable USB_EHCI_HCD \
                  --enable USB_STORAGE \
                  --enable CFG80211 \
-                 --enable CFG80211_WEXT
+                 --enable CFG80211_WEXT \
+                 --enable NET_CORE \
+                 --enable TUN
 make olddefconfig
 
 # -fcommon: the bundled scripts/dtc defines yylloc in two objects, which modern

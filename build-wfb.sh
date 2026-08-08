@@ -26,6 +26,7 @@ HOST_TRIPLET=arm-buildroot-linux-gnueabihf
 # format against an already-flashed drone.
 LIBSODIUM_VER=1.0.19
 LIBPCAP_VER=1.10.4
+LIBEVENT_VER=2.1.12-stable
 # Pinned, not a branch: upstream master is a moving target and the toolchain
 # here is gcc 7.3 (fixed by the 4.9 kernel). A later master added a designated
 # initializer in rx.cpp that 7.3 cannot compile, which broke CI while this
@@ -74,9 +75,30 @@ else
     echo "=== [1/3] libsodium already built ==="
 fi
 
+# ── libevent core ─────────────────────────────────────────────────────────────
+# wfb_tun uses only libevent's portable core. Link it statically so the target
+# has no extra runtime library to stage or resolve.
+if [ ! -f $OUT/lib/libevent_core.a ]; then
+    echo "=== [2/4] libevent $LIBEVENT_VER ==="
+    cd $SRC
+    [ -f libevent-$LIBEVENT_VER.tar.gz ] || \
+        wget -q https://github.com/libevent/libevent/releases/download/release-$LIBEVENT_VER/libevent-$LIBEVENT_VER.tar.gz
+    rm -rf libevent-$LIBEVENT_VER
+    tar xf libevent-$LIBEVENT_VER.tar.gz
+    cd libevent-$LIBEVENT_VER
+    ./configure --host=$HOST_TRIPLET --prefix=$OUT \
+                --enable-static --disable-shared --disable-samples \
+                --disable-libevent-regress --disable-openssl >/dev/null
+    make -j$(nproc) >/dev/null
+    make install >/dev/null
+    echo "libevent core installed"
+else
+    echo "=== [2/4] libevent already built ==="
+fi
+
 # ── libpcap ───────────────────────────────────────────────────────────────────
 if [ ! -f $OUT/lib/libpcap.a ]; then
-    echo "=== [2/3] libpcap $LIBPCAP_VER ==="
+    echo "=== [3/4] libpcap $LIBPCAP_VER ==="
     cd $SRC
     [ -f libpcap-$LIBPCAP_VER.tar.gz ] || \
         wget -q https://www.tcpdump.org/release/libpcap-$LIBPCAP_VER.tar.gz
@@ -100,11 +122,11 @@ if [ ! -f $OUT/lib/libpcap.a ]; then
     make install >/dev/null
     echo "libpcap installed"
 else
-    echo "=== [2/3] libpcap already built ==="
+    echo "=== [3/4] libpcap already built ==="
 fi
 
 # ── wfb-ng ────────────────────────────────────────────────────────────────────
-echo "=== [3/3] wfb-ng ($WFB_REF) ==="
+echo "=== [4/4] wfb-ng ($WFB_REF) ==="
 cd $SRC
 if [ ! -d wfb-ng ]; then
     # Full clone: a shallow one cannot resolve a pinned SHA that has fallen
@@ -165,8 +187,17 @@ make -j$(nproc) wfb_rx wfb_tx wfb_keygen \
     LDFLAGS="-L$OUT/lib" \
     || { echo "wfb-ng build failed" >&2; exit 1; }
 
+# Keep libevent static. The ordinary WFB binaries above retain their existing
+# link flags, while the tunnel gets exactly the one extra library it needs.
+make wfb_tun \
+    CC=${CROSS_COMPILE}gcc \
+    CXX=${CROSS_COMPILE}g++ \
+    CFLAGS="$WFB_CFLAGS" \
+    LDFLAGS="-L$OUT/lib $OUT/lib/libevent_core.a" \
+    || { echo "wfb-ng tunnel build failed" >&2; exit 1; }
+
 mkdir -p $OUT/bin
-for b in wfb_rx wfb_tx wfb_keygen; do
+for b in wfb_rx wfb_tx wfb_keygen wfb_tun; do
     [ -f $b ] && cp $b $OUT/bin/
 done
 ${CROSS_COMPILE}strip $OUT/bin/* 2>/dev/null || true
