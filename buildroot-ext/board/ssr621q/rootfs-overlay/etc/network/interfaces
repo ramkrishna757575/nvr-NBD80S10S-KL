@@ -1,0 +1,13 @@
+# Shipped here rather than left to BR2_SYSTEM_DHCP. That option generates this
+# file from a package whose install step is stamped: it ran before the option
+# was set and never ran again, leaving an lo-only file and a board with no
+# address that still reported "Starting network: OK".
+auto lo
+iface lo inet loopback
+
+# The PHY negotiates link after S40network runs, so the first discover goes out
+# with no carrier. -b lets udhcpc background itself and keep trying rather than
+# giving up and failing the interface.
+auto eth0
+iface eth0 inet dhcp
+	udhcpc_opts -b

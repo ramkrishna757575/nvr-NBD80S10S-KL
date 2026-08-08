@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# Load the SigmaStar MI stack.
+#
+# There is deliberately no stop case. These modules cannot be removed: rmmod
+# mi_disp takes the kernel down in DrvPnlSysfsInit. Changing sets needs a
+# reboot, which is why the set comes from the kernel command line.
+#
+
+case "$1" in
+  start)
+	MI_SET=xm
+	VDEC_DEBUG=0
+	for arg in $(cat /proc/cmdline); do
+		case $arg in
+			mi_set=*) MI_SET=${arg#mi_set=} ;;
+			vdec_debug=*) VDEC_DEBUG=${arg#vdec_debug=} ;;
+		esac
+	done
+	# Output goes to the console rather than a log: without UART input this
+	# is the only way to see which module rejected what.
+	/bin/load-mi "$MI_SET" "$VDEC_DEBUG"
+	;;
+  stop|restart|reload)
+	;;
+  *)
+	echo "Usage: $0 {start}"
+	exit 1
+esac
+
+exit 0

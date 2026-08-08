@@ -1,0 +1,85 @@
+#!/bin/sh
+# Usage: load-mi [sdk|xm|hybrid] [vdec_debug_level]   (default: xm, 0)
+SET=${1:-xm}
+VDEC_DEBUG=${2:-0}
+DIR=/lib/modules/$SET
+if [ ! -d $DIR ]; then
+    echo "no such module set: $SET (have: $(ls /lib/modules))"
+    exit 1
+fi
+echo "loading MI module set '$SET'"
+
+# Record the set so mi-player knows whether the VDEC ioctl numbers need
+# correcting: only XiongMai's 2023 mi_vdec.ko is shifted relative to the
+# libmi_vdec.so we link against.
+echo "$SET" > /tmp/mi-set
+
+# The VPU firmware is a file, not part of the module: mi_vdec loads
+# /config/vdec_fw/normal/chagall.bin during init. /config carries the 2020
+# SDK 18.06 blob, so any other module set boots a firmware it was never built
+# against. That is not a soft failure -- the decoder accepts the stream, then
+# answers every sequence init with SEQERR 0x5000 ("not found sps") and
+# consumes zero bytes. Put the set's own firmware in place before insmod.
+if [ -d $DIR/vdec_fw ]; then
+    cp -a $DIR/vdec_fw/. /config/vdec_fw/
+    echo "vdec firmware: using the '$SET' build"
+fi
+
+# The MI char devices have no sysfs class, so nothing auto-creates /dev nodes.
+# Minors are handed out by a counter in registration order -- exactly how the stock
+# XM loader (x_modules/modules/Load_MN63) does it: minor starts at 0 and increments
+# for each MI module that inserts successfully. mhal/mi_common/fbdev take no minor.
+# The "mi" major does not appear in /proc/devices until mi_common is inserted, so it
+# must be looked up lazily rather than before the loop.
+MI_MAJOR=""
+minor=0
+mkdir -p /dev/mi
+
+# Order follows the dependency graph reported by modinfo.
+# mi_sys and fbdev need module parameters, as the official SDK init passes them.
+for m in mhal mi_common mi_sys mi_gfx mi_divp mi_disp mi_vdec mi_panel mi_hdmi fbdev; do
+    [ -f $DIR/$m.ko ] || continue
+    case $m in
+        mi_sys) ARGS="cmdQBufSize=768 logBufSize=256 default_config_path=/config" ;;
+        fbdev)  ARGS="default_config_path_file=/config/fbdev.ini" ;;
+        # debug_level is normally 0. Raise it with vdec_debug=N on the kernel
+        # command line when the decoder needs to explain itself; it is chatty
+        # enough at frame rate to slow the 115200 console down.
+        mi_vdec) ARGS="debug_level=$VDEC_DEBUG" ;;
+        *)      ARGS="" ;;
+    esac
+    printf "insmod %-12s" "$m"
+    if ! insmod $DIR/$m.ko $ARGS 2>/tmp/insmod.err; then
+        echo " FAILED: $(cat /tmp/insmod.err)"
+        continue
+    fi
+
+    case $m in
+        mhal|mi_common|fbdev)
+            echo " ok"
+            ;;
+        *)
+            # Node name matches the module; the libraries try /dev/mi/<short> first
+            # and fall back to /dev/mi_<short>, so provide both.
+            [ -n "$MI_MAJOR" ] || MI_MAJOR=$(awk '$2=="mi" {print $1}' /proc/devices)
+            if [ -z "$MI_MAJOR" ]; then
+                echo " ok  (no 'mi' major in /proc/devices -- cannot create node!)"
+                continue
+            fi
+            short=${m#mi_}
+            mknod /dev/$m c "$MI_MAJOR" $minor 2>/dev/null
+            ln -sf ../$m /dev/mi/$short
+            echo " ok  -> /dev/$m (c $MI_MAJOR $minor)"
+            minor=$((minor + 1))
+            ;;
+    esac
+done
+
+# mi_poll has its own major and is always minor 0.
+poll_major=$(awk '$2=="mi_poll" {print $1}' /proc/devices)
+if [ -n "$poll_major" ] && [ ! -e /dev/mi_poll ]; then
+    mknod /dev/mi_poll c "$poll_major" 0
+fi
+# Tolerated rather than required: buildroot may be creating devices with
+# devtmpfs alone, in which case there is no mdev to run.
+mdev -s 2>/dev/null || true
