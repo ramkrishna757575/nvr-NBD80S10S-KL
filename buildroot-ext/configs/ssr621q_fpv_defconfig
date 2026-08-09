@@ -62,6 +62,21 @@ BR2_TARGET_ROOTFS_INITRAMFS=y
 
 # ── Packages ─────────────────────────────────────────────────────────────────
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/board/ssr621q/busybox.fragment"
+
+# curl, purely so sysupgrade can follow a GitHub release redirect. BusyBox wget
+# stalls forever moving between two https hosts, which every release download
+# does. mbedTLS rather than OpenSSL: a few hundred KB against a megabyte and a
+# half, and there is 2.1M spare in the system partition.
+BR2_PACKAGE_MBEDTLS=y
+BR2_PACKAGE_LIBCURL=y
+BR2_PACKAGE_LIBCURL_CURL=y
+BR2_PACKAGE_LIBCURL_MBEDTLS=y
+# Only http and https are wanted. These three are on by default and pull in
+# proxies, a cookie store, and LDAP/RTSP/SMB, none of which fetches a firmware
+# image.
+# BR2_PACKAGE_LIBCURL_PROXY_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_COOKIES_SUPPORT is not set
+# BR2_PACKAGE_LIBCURL_EXTRA_PROTOCOLS_FEATURES is not set
 BR2_PACKAGE_DROPBEAR=y
 BR2_PACKAGE_SIGMASTAR_MI=y
 BR2_PACKAGE_GS_TOOLS=y

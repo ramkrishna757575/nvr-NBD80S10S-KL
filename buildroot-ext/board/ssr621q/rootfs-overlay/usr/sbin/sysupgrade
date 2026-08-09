@@ -51,13 +51,39 @@ scratch_mount() {
     trap scratch_clean EXIT
 }
 
+# Fetch a URL to a file.
+#
+# curl for preference: BusyBox wget cannot follow a redirect from one https host
+# to another. It opens the second connection and then sits there forever, which
+# is exactly what a GitHub release download is -- github.com hands out a signed
+# URL on release-assets.githubusercontent.com. Given that final URL directly,
+# BusyBox fetches it happily, so it is only the hop it cannot manage.
+#
+# Neither client validates certificates (-k), deliberately: the Ed25519
+# signature checked below is the trust anchor, so the transport does not have to
+# be. A CA bundle to authenticate a download we already authenticate would cost
+# more than it is worth.
+#
+# Both get timeouts. The failure that led here was an unbounded wait with no
+# output, which looks exactly like a slow link until you wait long enough.
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fkL --connect-timeout 15 --max-time 1800 -o "$1" "$2"
+    else
+        wget -T 30 -O "$1" "$2"
+    fi
+}
+
 case "$SRC" in
     http://*|https://*|ftp://*)
         scratch_mount
         echo "sysupgrade: downloading $SRC"
-        wget -O $SCRATCH/sysupgrade.bin "$SRC" || exit 1
+        fetch $SCRATCH/sysupgrade.bin "$SRC" || {
+            echo "sysupgrade: download failed" >&2
+            exit 1
+        }
         if [ $INSECURE -eq 0 ]; then
-            wget -O $SCRATCH/sysupgrade.sig "$SRC.sig" 2>/dev/null &&
+            fetch $SCRATCH/sysupgrade.sig "$SRC.sig" 2>/dev/null &&
                 SIG=$SCRATCH/sysupgrade.sig
         fi
         SRC=$SCRATCH/sysupgrade.bin ;;

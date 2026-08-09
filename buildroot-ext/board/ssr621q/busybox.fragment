@@ -1,5 +1,8 @@
-# BusyBox fragment: give wget TLS, so the board can fetch its own updates from
-# the release URL the CI notes print.
+# BusyBox fragment: give wget TLS, so it can still fetch over https on its own.
+#
+# sysupgrade prefers curl, because BusyBox wget stalls forever following a
+# redirect between two https hosts, and that is what a GitHub release download
+# is. This stays as the fallback for direct URLs, which it handles fine.
 #
 # ssl_client is BusyBox's own TLS, not OpenSSL -- a few tens of KB rather than a
 # megabyte and a half. It does NOT validate certificates, which is why
