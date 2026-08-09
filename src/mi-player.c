@@ -824,7 +824,8 @@ int main(int argc, char **argv)
     uint8_t *fbuf = NULL;               /* sliding window, for -f */
     const size_t fcap = 1024 * 1024;    /* has to hold one access unit */
     size_t ffill = 0, fpos = 0;
-    int fps = 30;                       /* replay pacing, and the synthetic PTS */
+    int fps = 60;                       /* replay rate; -fps overrides */
+    unsigned pts_hz;
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -848,7 +849,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-fps") && i + 1 < argc) {
             fps = atoi(argv[++i]);
             if (fps < 1)
-                fps = 30;
+                fps = 60;
         }
         else if (!strcmp(argv[i], "-stream"))
             vmode = E_MI_VDEC_VIDEO_MODE_STREAM;
@@ -882,7 +883,7 @@ int main(int argc, char **argv)
                 "  -rec OUT  record to OUT, uncapped, for a mounted USB stick.\n"
                 "            Same bytes the decoder gets: an Annex-B elementary\n"
                 "            stream, playable as-is and remuxable losslessly.\n"
-                "  -fps N    replay/PTS rate, default 30. Only paces -f.\n"
+                "  -fps N    replay rate, default 60. Only paces -f.\n"
                 "  -s WxH    source resolution, e.g. 1280x720. The decoder\n"
                 "            cannot scale up, so it must decode at the stream's\n"
                 "            own size; DIVP then scales to the output.\n"
@@ -1138,6 +1139,11 @@ int main(int argc, char **argv)
     raw = file ? 1 : raw_forced;
     detected = raw;
 
+    /* Only replay follows -fps. Live keeps the 30Hz basis it has always run
+       with: the decoder needs this value to move, not to be accurate, and that
+       path works today. */
+    pts_hz = file ? (unsigned)fps : 30;
+
     if (dump) {
         dump_fd = open(dump, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (dump_fd < 0)
@@ -1243,7 +1249,7 @@ int main(int argc, char **argv)
         /* Monotonic presentation time in microseconds. A constant PTS makes
            some vendor decoders treat every frame as a duplicate and drop it
            without reporting an error. */
-        vs.u64PTS       = frames * (1000000ull / (unsigned)fps);
+        vs.u64PTS       = frames * (1000000ull / pts_hz);
         vs.bEndOfFrame  = TRUE;
         vs.bEndOfStream = FALSE;
 
