@@ -7,6 +7,13 @@ CONFIG_USB_COMMON=y
 CONFIG_USB_EHCI_HCD=y
 CONFIG_USB_STORAGE=y
 
+# Recording to a USB stick. The vendor defconfig already has the SCSI stack,
+# BLK_DEV_SD and both partition table parsers; only the filesystem is missing.
+# ext4 rather than the vendor's FAT/NTFS modules: no 4G file size limit, and it
+# journals, which matters when the stick is pulled mid-recording. EXT4_FS pulls
+# in JBD2, CRC16 and CRYPTO_CRC32C by itself.
+CONFIG_EXT4_FS=y
+
 # cfg80211 for the RTL drivers. WEXT is what the vendor tooling talks.
 CONFIG_CFG80211=y
 CONFIG_CFG80211_WEXT=y

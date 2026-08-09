@@ -813,7 +813,10 @@ int main(int argc, char **argv)
     const char *rtsp_url = NULL;
     const char *dump = NULL;
     int dump_fd = -1;
-    size_t dump_left = 8u * 1024 * 1024;   /* tmpfs is RAM; do not fill it */
+    /* -d writes into /tmp, which is RAM on a board with very little of it, so it
+       is capped. -rec writes to mounted storage and sets this to the sentinel
+       below, meaning no limit. */
+    size_t dump_left = 8u * 1024 * 1024;
     int udp_port = 5600, in_fd = -1, i;
     int raw = 0, raw_forced = 0, detected = 0;
     unsigned long long frames = 0, bytes = 0, loops = 0;
@@ -836,6 +839,10 @@ int main(int argc, char **argv)
             raw_forced = 1;
         else if (!strcmp(argv[i], "-d") && i + 1 < argc)
             dump = argv[++i];
+        else if (!strcmp(argv[i], "-rec") && i + 1 < argc) {
+            dump = argv[++i];
+            dump_left = (size_t)-1;
+        }
         else if (!strcmp(argv[i], "-stream"))
             vmode = E_MI_VDEC_VIDEO_MODE_STREAM;
         else if (!strcmp(argv[i], "-noscale"))
@@ -865,6 +872,9 @@ int main(int argc, char **argv)
                 "  -raw      input is Annex-B, not RTP (autodetected otherwise)\n"
                 "  -stream   feed VDEC in STREAM mode (default FRAME)\n"
                 "  -d OUT    also write the reassembled stream to OUT\n"
+                "  -rec OUT  record to OUT, uncapped, for a mounted USB stick.\n"
+                "            Same bytes the decoder gets: an Annex-B elementary\n"
+                "            stream, playable as-is and remuxable losslessly.\n"
                 "  -s WxH    source resolution, e.g. 1280x720. The decoder\n"
                 "            cannot scale up, so it must decode at the stream's\n"
                 "            own size; DIVP then scales to the output.\n"
@@ -1215,9 +1225,6 @@ int main(int argc, char **argv)
         vs.bEndOfStream = FALSE;
 
         if (dump_fd >= 0) {
-            /* /tmp is a tmpfs, so this dump costs RAM on a board with very
-               little of it. Cap it: filling memory invites the OOM killer,
-               and telnetd is the only interactive console here. */
             if (dump_left == 0) {
                 printf("dump limit reached, closing %s\n", dump);
                 close(dump_fd);
@@ -1225,9 +1232,15 @@ int main(int argc, char **argv)
             } else {
                 size_t n_w = out_len < dump_left ? out_len : dump_left;
 
-                if (write(dump_fd, out, n_w) < 0)
-                    perror("dump write");
-                dump_left -= n_w;
+                if (write(dump_fd, out, n_w) < 0) {
+                    /* A stick that filled up or was pulled must not take the
+                       video down with it: give up writing, keep decoding. */
+                    perror(dump);
+                    close(dump_fd);
+                    dump_fd = -1;
+                } else if (dump_left != (size_t)-1) {
+                    dump_left -= n_w;
+                }
             }
         }
 

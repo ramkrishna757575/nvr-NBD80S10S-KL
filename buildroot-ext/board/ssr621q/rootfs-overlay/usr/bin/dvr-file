@@ -1,0 +1,24 @@
+#!/bin/sh
+# Print the path to record into, mounting the stick first if needed.
+# usage: dvr-file [seconds to wait for the device]
+#
+# Names are sequential rather than timestamped: the RTC has no battery and
+# nothing sets the clock, so every boot starts at 1970-01-01 and timestamped
+# names would collide across flights.
+MIN_KB=${DVR_MIN_KB:-204800}
+
+DIR=$(dvr-mount "${1:-0}") || exit 1
+
+# Stop before the stick is full rather than at ENOSPC: ext4 slows badly on a
+# full filesystem, and the player would be writing video at the time.
+free=$(df -k "$DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -z "$free" ] || [ "$free" -lt "$MIN_KB" ]; then
+    echo "dvr: only ${free:-0}K free on $DIR, not recording" >&2
+    exit 1
+fi
+
+n=1
+while [ -e "$(printf '%s/dvr-%04d.h265' "$DIR" "$n")" ]; do
+    n=$((n + 1))
+done
+printf '%s/dvr-%04d.h265\n' "$DIR" "$n"

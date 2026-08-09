@@ -7,13 +7,16 @@
 # "udp" is the wfb-ng path: wfb_rx has already put a decoded stream on a local
 # UDP port, so there is no RTSP session to negotiate and no config file to wait
 # for. Everything downstream -- OSD clearing, retry loop -- is shared.
+
+# Defined out here because the DVR knob below is read on both paths, not just wfb.
+wfb_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
+
 if [ "$1" = "udp" ]; then
     [ -f /tmp/fpv.conf ] && . /tmp/fpv.conf
     URL="udp:$(cat /tmp/wfb.port 2>/dev/null || echo 5600)"
     # There is no SDP on this path, so nothing announces the format: mi-player
     # would assume H.264 at 1280x720 and decode nothing, which reaches HDMI as a
     # green screen rather than an error. Take both from the config instead.
-    wfb_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
     CODEC=$(wfb_get codec);      [ -n "$CODEC" ] || CODEC=h265
     [ "$CODEC" = "h265" ] && FPV_OPTS="$FPV_OPTS -h265"
     FPV_SRC=$(wfb_get video_size)
@@ -62,11 +65,19 @@ killall mi-disp-init fb-splash 2>/dev/null
 [ -e /dev/fb0 ] && dd if=/dev/zero of=/dev/fb0 bs=64k 2>/dev/null
 
 echo "fpv: link up, streaming $URL" > /dev/console
+DVR=$(wfb_get dvr)
 (
     while :; do
+        # A fresh file per player start: this loop restarts the player whenever
+        # the air unit drops, and reusing the name would truncate the last one.
+        REC=""
+        if [ "$DVR" = "1" ] && REC=$(dvr-file 5); then
+            echo "fpv: recording to $REC"
+            REC="-rec $REC"
+        fi
         case "$URL" in
-            udp:*) ${FPV_PLAYER:-mi-player} -u "${URL#udp:}" -s "${FPV_SRC:-1280x720}" $FPV_OPTS ;;
-            *)     ${FPV_PLAYER:-mi-player} -r "$URL" -s "${FPV_SRC:-1280x720}" $FPV_OPTS ;;
+            udp:*) ${FPV_PLAYER:-mi-player} -u "${URL#udp:}" -s "${FPV_SRC:-1280x720}" $FPV_OPTS $REC ;;
+            *)     ${FPV_PLAYER:-mi-player} -r "$URL" -s "${FPV_SRC:-1280x720}" $FPV_OPTS $REC ;;
         esac
         # The air unit may still be booting, or may have rebooted mid-flight.
         echo "fpv: player exited, retrying in 3s" > /dev/console

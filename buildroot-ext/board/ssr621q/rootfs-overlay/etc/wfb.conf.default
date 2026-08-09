@@ -59,6 +59,18 @@ alink_rx_radio_port = 32
 # Only the glyphs are drawn, so the picture shows through around them.
 osd = 1
 
+# Record the incoming video to a USB stick as a raw H.265 elementary stream.
+# The stick must be formatted ext4 -- FAT32 stops at a 4G file, about 40 minutes
+# here, and does not survive being pulled mid-write.
+#
+# These are the same bytes the decoder is fed, so recording adds no decode work
+# and cannot change what reaches HDMI: if the stick fills or is unplugged,
+# writing stops and the video carries on. Files land in /mnt/dvr as
+# dvr-0001.h265, a new one per player start. Play them as they are, or remux
+# without re-encoding:
+#   ffmpeg -i dvr-0001.h265 -c copy flight.mp4
+dvr = 0
+
 # --- apfpv mode only ---
 ssid = OpenIPC
 psk = 12345678

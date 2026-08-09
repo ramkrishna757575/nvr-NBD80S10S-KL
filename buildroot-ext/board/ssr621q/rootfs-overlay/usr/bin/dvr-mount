@@ -1,0 +1,35 @@
+#!/bin/sh
+# Mount a USB stick for recording and print where it landed.
+# usage: dvr-mount [seconds to wait for the device]
+#
+# There is no hotplug daemon on this board. Device nodes come from devtmpfs, so
+# /dev/sda1 appears on its own, but nothing mounts it -- hence calling this on
+# demand rather than from an init script, so a stick pushed in after boot works.
+#
+# ext4 only, deliberately. FAT32 caps a file at 4G, which is about 40 minutes at
+# the bitrate this link runs, and it has no journal to survive the stick being
+# pulled mid-recording.
+MNT=/mnt/dvr
+WAIT=${1:-0}
+
+grep -q " $MNT " /proc/mounts && { echo "$MNT"; exit 0; }
+mkdir -p "$MNT"
+
+n=0
+while :; do
+    for d in /dev/sd?1 /dev/sd?2 /dev/sd?; do
+        [ -b "$d" ] || continue
+        # noatime, or every read schedules a write. commit=5 bounds what a
+        # yanked stick loses to the last five seconds.
+        if mount -t ext4 -o rw,noatime,commit=5 "$d" "$MNT" 2>/dev/null; then
+            echo "$MNT"
+            exit 0
+        fi
+    done
+    [ "$n" -ge "$WAIT" ] && break
+    n=$((n + 1))
+    sleep 1
+done
+
+echo "dvr: no mountable ext4 partition on USB" >&2
+exit 1
