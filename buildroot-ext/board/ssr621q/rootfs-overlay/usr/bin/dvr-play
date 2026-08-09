@@ -1,0 +1,43 @@
+#!/bin/sh
+# Replay a recording to HDMI.
+# usage: dvr-play [file]
+#
+# With no argument, plays the highest-numbered recording on the stick. Picked by
+# name rather than mtime on purpose: the RTC has no battery, so every file
+# written before the clock is set claims the same 1970 timestamp and -t would
+# order them arbitrarily.
+#
+# Holds off the link supervisor for as long as it runs. That loop restarts the
+# live player within two seconds of finding none, which would otherwise take the
+# display back mid-replay.
+wfb_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
+
+FILE=$1
+if [ -z "$FILE" ]; then
+    DIR=$(dvr-mount 5) || exit 1
+    FILE=$(ls -1 "$DIR"/dvr-*.h265 2>/dev/null | sort | tail -1)
+fi
+if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
+    echo "dvr-play: no recording to play" >&2
+    exit 1
+fi
+
+CODEC=$(wfb_get codec);      [ -n "$CODEC" ] || CODEC=h265
+SRC=$(wfb_get video_size);   [ -n "$SRC" ]   || SRC=1920x1080
+OPTS=""
+[ "$CODEC" = "h265" ] && OPTS="-h265"
+
+# The hold has to go even if this is interrupted, or the live player never
+# comes back.
+cleanup() { rm -f /tmp/fpv.hold; }
+trap cleanup EXIT INT TERM
+
+: > /tmp/fpv.hold
+fpv-stop >/dev/null 2>&1
+killall fb-splash 2>/dev/null
+# fpv-stop leaves its "link lost" splash on the OSD layer, which sits above the
+# video plane at full alpha and would hide the replay.
+[ -e /dev/fb0 ] && dd if=/dev/zero of=/dev/fb0 bs=64k 2>/dev/null
+
+echo "dvr-play: $FILE  (Ctrl-C to stop; loops until then)"
+mi-player -f "$FILE" -s "$SRC" ${FPS:+-fps "$FPS"} $OPTS

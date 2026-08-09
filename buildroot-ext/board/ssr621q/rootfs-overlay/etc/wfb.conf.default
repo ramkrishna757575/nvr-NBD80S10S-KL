@@ -69,6 +69,7 @@ osd = 1
 # dvr-0001.h265, a new one per player start. Play them as they are, or remux
 # without re-encoding:
 #   ffmpeg -i dvr-0001.h265 -c copy flight.mp4
+# `dvr-play` replays the newest one to HDMI on the board itself.
 dvr = 0
 
 # --- apfpv mode only ---

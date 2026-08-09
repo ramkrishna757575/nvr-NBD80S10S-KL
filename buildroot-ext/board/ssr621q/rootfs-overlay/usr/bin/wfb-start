@@ -137,6 +137,13 @@ splash() {
     last=start
     down=0
     while :; do
+        # dvr-play puts a recording on the screen and holds this off while it
+        # runs; without that, the branch below would restart the live player
+        # under it within two seconds.
+        if [ -f /tmp/fpv.hold ]; then
+            sleep 2
+            continue
+        fi
         now=$(wfb_state)
         if [ "$now" = "up" ]; then
             down=0

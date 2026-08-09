@@ -821,8 +821,10 @@ int main(int argc, char **argv)
     int raw = 0, raw_forced = 0, detected = 0;
     unsigned long long frames = 0, bytes = 0, loops = 0;
     uint8_t *buf;
-    uint8_t *fbuf = NULL;               /* whole file, for -f */
-    size_t fsize = 0, fpos = 0;
+    uint8_t *fbuf = NULL;               /* sliding window, for -f */
+    const size_t fcap = 1024 * 1024;    /* has to hold one access unit */
+    size_t ffill = 0, fpos = 0;
+    int fps = 30;                       /* replay pacing, and the synthetic PTS */
 
     setvbuf(stdout, NULL, _IONBF, 0);
 
@@ -842,6 +844,11 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-rec") && i + 1 < argc) {
             dump = argv[++i];
             dump_left = (size_t)-1;
+        }
+        else if (!strcmp(argv[i], "-fps") && i + 1 < argc) {
+            fps = atoi(argv[++i]);
+            if (fps < 1)
+                fps = 30;
         }
         else if (!strcmp(argv[i], "-stream"))
             vmode = E_MI_VDEC_VIDEO_MODE_STREAM;
@@ -875,6 +882,7 @@ int main(int argc, char **argv)
                 "  -rec OUT  record to OUT, uncapped, for a mounted USB stick.\n"
                 "            Same bytes the decoder gets: an Annex-B elementary\n"
                 "            stream, playable as-is and remuxable losslessly.\n"
+                "  -fps N    replay/PTS rate, default 30. Only paces -f.\n"
                 "  -s WxH    source resolution, e.g. 1280x720. The decoder\n"
                 "            cannot scale up, so it must decode at the stream's\n"
                 "            own size; DIVP then scales to the output.\n"
@@ -1083,11 +1091,9 @@ int main(int argc, char **argv)
     /* ---- feed ---------------------------------------------------------- */
     if (file) {
         off_t end;
-        ssize_t got;
 
-        /* Read the clip once into memory. It is then split into access units
-           and replayed in a loop, so the decoder keeps being fed and /proc
-           has a running channel to report on. */
+        /* Streamed through a window rather than read in whole: a recording off
+           the DVR is routinely larger than this board has RAM. */
         in_fd = open(file, O_RDONLY);
         if (in_fd < 0) {
             perror(file);
@@ -1098,22 +1104,14 @@ int main(int argc, char **argv)
             fprintf(stderr, "%s: empty\n", file);
             return 1;
         }
-        fsize = (size_t)end;
-        fbuf  = malloc(fsize);
+        lseek(in_fd, 0, SEEK_SET);
+        fbuf = malloc(fcap);
         if (!fbuf) {
             fprintf(stderr, "out of memory\n");
             return 1;
         }
-        lseek(in_fd, 0, SEEK_SET);
-        got = read(in_fd, fbuf, fsize);
-        close(in_fd);
-        in_fd = -1;
-        if (got != (ssize_t)fsize) {
-            fprintf(stderr, "%s: short read\n", file);
-            return 1;
-        }
-        printf("feeding from %s, %u bytes, looping\n",
-               file, (unsigned)fsize);
+        printf("feeding from %s, %llu bytes, looping\n",
+               file, (unsigned long long)end);
     } else if (rtsp_url) {
         /* Already connected above. Time out reads so the session keepalive
            still runs if the video stalls -- otherwise the server drops us. */
@@ -1158,19 +1156,44 @@ int main(int argc, char **argv)
 
         if (file) {
             size_t au;
+            int wrapped = 0;
 
-            if (fpos >= fsize) {
+            /* Drop what was fed last time, then top the window back up. */
+            if (fpos > 0) {
+                memmove(fbuf, fbuf + fpos, ffill - fpos);
+                ffill -= fpos;
                 fpos = 0;
+            }
+            while (ffill < fcap) {
+                ssize_t got = read(in_fd, fbuf + ffill, fcap - ffill);
+
+                if (got > 0) {
+                    ffill += (size_t)got;
+                    continue;
+                }
+                if (got < 0) {
+                    perror(file);
+                    break;
+                }
+                /* End of the recording. Rewind and keep filling, so the window
+                   spans the join and the loop has no gap in it. Once only: a
+                   file shorter than the window would otherwise never stop. */
+                if (wrapped++)
+                    break;
+                lseek(in_fd, 0, SEEK_SET);
                 loops++;
             }
-            au = au_end(fbuf, fsize, fpos,
+            if (ffill == 0)
+                break;
+
+            au = au_end(fbuf, ffill, 0,
                         codec == E_MI_VDEC_CODEC_TYPE_H265);
-            out     = fbuf + fpos;
-            out_len = au - fpos;
+            out     = fbuf;
+            out_len = au;
             fpos    = au;
             /* Pace it: a decoder fed far faster than it drains just reports a
                full queue, and the display has nowhere to put the frames. */
-            usleep(1000000 / 30);
+            usleep(1000000 / (unsigned)fps);
         } else {
             ssize_t n = read(in_fd, buf, 256 * 1024);
 
@@ -1220,7 +1243,7 @@ int main(int argc, char **argv)
         /* Monotonic presentation time in microseconds. A constant PTS makes
            some vendor decoders treat every frame as a duplicate and drop it
            without reporting an error. */
-        vs.u64PTS       = frames * (1000000ull / 30);
+        vs.u64PTS       = frames * (1000000ull / (unsigned)fps);
         vs.bEndOfFrame  = TRUE;
         vs.bEndOfStream = FALSE;
 
