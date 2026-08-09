@@ -1,24 +1,39 @@
 #!/bin/sh
 # Replay a recording to HDMI.
-# usage: dvr-play [file]
+# usage: dvr-play [-l | file | name | number]
 #
-# With no argument, plays the highest-numbered recording on the stick. Picked by
-# name rather than mtime on purpose: the RTC has no battery, so every file
-# written before the clock is set claims the same 1970 timestamp and -t would
-# order them arbitrarily.
+#   dvr-play          the highest-numbered recording
+#   dvr-play -l       list what is on the stick
+#   dvr-play 3        /mnt/dvr/dvr-0003.h265
+#   dvr-play dvr-0003.h265
+#   dvr-play /path/to/anything.h265
+#
+# Highest-numbered rather than newest by mtime on purpose: the RTC has no
+# battery, so every file written before the clock is set claims the same 1970
+# timestamp and -t would order them arbitrarily.
 #
 # Holds off the link supervisor for as long as it runs. That loop restarts the
 # live player within two seconds of finding none, which would otherwise take the
 # display back mid-replay.
 wfb_get() { sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\(.*\)\$/\1/p" /etc/wfb.conf 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//; s/[[:space:]]*$//'; }
 
-FILE=$1
-if [ -z "$FILE" ]; then
-    DIR=$(dvr-mount 5) || exit 1
-    FILE=$(ls -1 "$DIR"/dvr-*.h265 2>/dev/null | sort | tail -1)
+# Not fatal: a path somewhere else is still playable with no stick present.
+DIR=$(dvr-mount 5) || DIR=/mnt/dvr
+
+if [ "$1" = "-l" ]; then
+    ls -1 "$DIR"/dvr-*.h265 2>/dev/null || echo "dvr-play: no recordings on $DIR" >&2
+    exit 0
 fi
+
+FILE=$1
+case "$FILE" in
+    "")        FILE=$(ls -1 "$DIR"/dvr-*.h265 2>/dev/null | sort | tail -1) ;;
+    */*)       ;;
+    *[!0-9]*)  FILE="$DIR/$FILE" ;;
+    *)         FILE=$(printf '%s/dvr-%04d.h265' "$DIR" "$FILE") ;;
+esac
 if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
-    echo "dvr-play: no recording to play" >&2
+    echo "dvr-play: no such recording: ${1:-(none on $DIR)}" >&2
     exit 1
 fi
 
