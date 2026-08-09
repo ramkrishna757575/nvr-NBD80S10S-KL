@@ -1,0 +1,58 @@
+#!/bin/sh
+# apfpv link status, refreshed once a second. -1 prints once and exits.
+#
+# The apfpv counterpart to wfb-cli, and it has to work differently. On the wfb
+# path wfb_rx reports every packet it decrypts, so wfb-cli has real numbers to
+# read. Here wpa_supplicant does the joining and the camera sends ordinary UDP
+# or RTSP, and nothing counts any of it -- so association comes from
+# /tmp/wifi-status, which the apfpv script already writes for fb-splash, and
+# "is video actually arriving" comes from the interface byte counter.
+IFACE=${IFACE:-wlan0}
+STATUS=/tmp/wifi-status
+ONCE=0
+[ "$1" = "-1" ] && ONCE=1
+
+get() { sed -n "s/^$1=//p" $STATUS 2>/dev/null | head -1; }
+
+rx_bytes() { cat /sys/class/net/$IFACE/statistics/rx_bytes 2>/dev/null || echo 0; }
+
+show() {
+    if [ ! -f $STATUS ]; then
+        echo "apfpv-cli: no status yet -- is apfpv running? (mode = apfpv)"
+        return 1
+    fi
+
+    # A second of traffic. Associating proves nothing about video: a camera
+    # that never got its RTSP PLAY sends absolutely nothing, and the link looks
+    # perfect while the screen stays black.
+    r1=$(rx_bytes)
+    sleep 1
+    kbps=$(( ($(rx_bytes) - r1) * 8 / 1000 ))
+
+    if [ -f /tmp/fpv.pid ] && kill -0 "$(cat /tmp/fpv.pid)" 2>/dev/null; then
+        player="player up"
+    else
+        player="player down"
+    fi
+
+    state=$(get state)
+    ssid=$(get ssid)
+    if [ "$state" = "COMPLETED" ]; then
+        echo "joined ${ssid:-?}  $(get signal)dBm  $(get freq)MHz   ${kbps} kbit/s   $player"
+    else
+        printf '%s' "${state:-UNKNOWN}"
+        [ -n "$ssid" ] && printf ' (%s)' "$ssid"
+        note=$(get note)
+        [ -n "$note" ] && printf '  -- %s' "$note"
+        echo
+    fi
+}
+
+if [ $ONCE -eq 1 ]; then
+    show
+    exit $?
+fi
+echo "apfpv-cli: ctrl-c to stop"
+while :; do
+    show
+done
