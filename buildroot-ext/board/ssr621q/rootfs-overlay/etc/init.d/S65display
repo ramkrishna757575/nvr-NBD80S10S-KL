@@ -52,7 +52,7 @@ case "$1" in
 		eth_ip=$(cat /tmp/eth-ip 2>/dev/null)
 		[ -n "$eth_ip" ] || eth_ip=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
 		[ -n "$eth_ip" ] || eth_ip="DHCP PENDING"
-		fb-splash -p "OPENIPC GROUND STATION" \
+		fb-splash -p "OpenIPC Ground Station" \
 		             "SSR621Q HDMI OK" \
 		             "SSH $eth_ip" > /tmp/fb-splash.log 2>&1 \
 			&& echo "display: splash drawn" \

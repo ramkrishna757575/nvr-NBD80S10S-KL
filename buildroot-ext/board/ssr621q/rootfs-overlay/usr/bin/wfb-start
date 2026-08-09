@@ -131,7 +131,7 @@ wfb_state() {
 splash() {
     [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] || return 0
     killall fb-splash 2>/dev/null
-    fb-splash -p "OPENIPC GROUND STATION" "$1" "$2" >/dev/null 2>&1
+    fb-splash -p "OpenIPC Ground Station" "$1" "$2" >/dev/null 2>&1
 }
 (
     last=start
@@ -165,9 +165,9 @@ splash() {
                     fpv-stop
                 elif [ "$now" != "$last" ]; then
                     case "$now" in
-                        nokey) splash "AIR UNIT HEARD, WRONG KEY" \
+                        nokey) splash "Air unit heard, wrong key" \
                                       "copy drone.key to the air unit" ;;
-                        *)     splash "WAITING FOR AIR UNIT" \
+                        *)     splash "Waiting for air unit" \
                                       "channel $CHANNEL  link_id $LINK_ID" ;;
                     esac
                 fi

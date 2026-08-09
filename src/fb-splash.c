@@ -266,10 +266,10 @@ static int stats_loop(const char *iface)
         /* Clear just the text block. */
         fill_rect(0, 0, (int)vinfo.xres, y0 + line_h * 13, pack(0, 0, 40));
 
-        draw_text(30, y, "OPENIPC GROUND STATION", scale, pack(0, 255, 0));
+        draw_text(30, y, "OpenIPC Ground Station", scale, pack(0, 255, 0));
         y += line_h + scale * 2;
 
-        snprintf(buf, sizeof(buf), "LINK %s %s", iface, state);
+        snprintf(buf, sizeof(buf), "Link %s %s", iface, state);
         draw_text(30, y, buf, scale,
                   strcmp(state, "up") == 0 ? pack(0, 255, 0) : pack(255, 200, 0));
         y += line_h;
@@ -278,17 +278,17 @@ static int stats_loop(const char *iface)
            but refusing us, so distinguish the two rather than just saying
            "not connected". */
         if (ssid[0] && freq[0])
-            snprintf(buf, sizeof(buf), "AP %s %sMHZ %sDBM", ssid, freq, sig);
+            snprintf(buf, sizeof(buf), "AP %s  %s MHz  %s dBm", ssid, freq, sig);
         else if (ssid[0])
-            snprintf(buf, sizeof(buf), "AP %s NOT VISIBLE", ssid);
+            snprintf(buf, sizeof(buf), "AP %s not visible", ssid);
         else
-            snprintf(buf, sizeof(buf), "AP SCANNING");
+            snprintf(buf, sizeof(buf), "Scanning for AP");
         draw_text(30, y, buf, scale,
                   freq[0] ? pack(255, 255, 255) : pack(255, 80, 80));
         y += line_h;
 
         if (wstate[0] || reg[0]) {
-            snprintf(buf, sizeof(buf), "WPA %s  REG %s",
+            snprintf(buf, sizeof(buf), "WPA %s  Reg %s",
                      wstate[0] ? wstate : "-", reg[0] ? reg : "-");
             draw_text(30, y, buf, scale,
                       strcmp(wstate, "COMPLETED") == 0 ? pack(0, 255, 0)
@@ -302,12 +302,12 @@ static int stats_loop(const char *iface)
             y += line_h;
         }
 
-        /* The address to telnet to. This lives on a different interface from
-           the one being counted, and it is the one that goes missing when the
-           drone's DHCP collides with it -- so show it explicitly rather than
-           leaving the operator to guess where the board went. */
+        /* The address to reach the board on. This lives on a different
+           interface from the one being counted, and it is the one that goes
+           missing when the drone's DHCP collides with it -- so show it
+           explicitly rather than leaving the operator to guess. */
         if (strcmp(iface, MGMT_IFACE) != 0) {
-            snprintf(buf, sizeof(buf), "TELNET %s", mgmt);
+            snprintf(buf, sizeof(buf), "SSH %s", mgmt);
             draw_text(30, y, buf, scale,
                       strcmp(mgmt, "NONE") == 0 ? pack(255, 80, 80)
                                                 : pack(0, 255, 0));
@@ -318,16 +318,16 @@ static int stats_loop(const char *iface)
         draw_text(30, y, buf, scale, pack(255, 255, 255));
         y += line_h;
 
-        snprintf(buf, sizeof(buf), "RX %llu PKTS", pkts);
+        snprintf(buf, sizeof(buf), "Rx %llu pkts", pkts);
         draw_text(30, y, buf, scale, pack(255, 255, 255));
         y += line_h;
 
-        snprintf(buf, sizeof(buf), "RATE %llu PPS", dp);
+        snprintf(buf, sizeof(buf), "Rate %llu pps", dp);
         draw_text(30, y, buf, scale,
                   dp > 0 ? pack(0, 255, 255) : pack(255, 80, 80));
         y += line_h;
 
-        snprintf(buf, sizeof(buf), "%llu KBPS", (db * 8ULL) / 1000ULL);
+        snprintf(buf, sizeof(buf), "%llu kbps", (db * 8ULL) / 1000ULL);
         draw_text(30, y, buf, scale,
                   db > 0 ? pack(0, 255, 255) : pack(255, 80, 80));
 
@@ -411,17 +411,17 @@ static int wfb_loop(void)
         /* rssi is "-" until a packet actually decrypts, so it doubles as the
            "is this link real" test -- the same one wfb-start keys the player on. */
         if (n < WFB_FIELDS || strcmp(f[3], "-") == 0) {
-            draw_text(x0, y, "NO LINK", scale, red);
+            draw_text(x0, y, "No link", scale, red);
         } else {
             int rssi = atoi(f[3]);
             int lost = atoi(f[8]);
 
-            snprintf(buf, sizeof(buf), "%sDBM SNR %s MCS%s", f[3], f[4], f[1]);
+            snprintf(buf, sizeof(buf), "%s dBm  SNR %s  MCS%s", f[3], f[4], f[1]);
             draw_text(x0, y, buf, scale,
                       rssi > -70 ? green : (rssi > -80 ? amber : red));
             y += line_h;
 
-            snprintf(buf, sizeof(buf), "%s KBPS FEC %s LOST %s", f[6], f[7], f[8]);
+            snprintf(buf, sizeof(buf), "%s kbps  FEC %s  Lost %s", f[6], f[7], f[8]);
             draw_text(x0, y, buf, scale, lost > 0 ? red : white);
         }
 
@@ -554,7 +554,7 @@ int main(int argc, char **argv)
     } else {
         char mgmt[32], line[64];
 
-        draw_text(30, y, "OPENIPC GROUND STATION", scale, pack(0, 255, 0));
+        draw_text(30, y, "OpenIPC Ground Station", scale, pack(0, 255, 0));
         y += FONT_H + 8;
         draw_text(30, y, "SSR621Q - HDMI OK", scale, pack(255, 255, 255));
         y += FONT_H + 4;
