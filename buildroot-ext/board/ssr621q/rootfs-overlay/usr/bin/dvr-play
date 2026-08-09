@@ -76,9 +76,9 @@ killall fb-splash 2>/dev/null
 # video plane at full alpha and would hide the replay.
 [ -e /dev/fb0 ] && dd if=/dev/zero of=/dev/fb0 bs=64k 2>/dev/null
 
-# Runtime counter over the picture. The font has no lowercase.
+# Runtime counter over the picture.
 if [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
-    fb-splash --timer "$(basename "$FILE" .h265 | tr 'a-z' 'A-Z')" >/dev/null 2>&1 &
+    fb-splash --timer "$(basename "$FILE" .h265)" >/dev/null 2>&1 &
 fi
 
 echo "dvr-play: $FILE  (Ctrl-C to stop)"
