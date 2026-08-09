@@ -43,16 +43,43 @@ OPTS=""
 [ "$CODEC" = "h265" ] && OPTS="-h265"
 
 # The hold has to go even if this is interrupted, or the live player never
-# comes back.
-cleanup() { rm -f /tmp/fpv.hold; }
+# comes back -- but not before the driver has finished with the last one, or
+# the supervisor starts the live player straight into a half-torn-down pipeline.
+cleanup() {
+    killall fb-splash 2>/dev/null
+    n=0
+    while pidof mi-player >/dev/null 2>&1 && [ $n -lt 15 ]; do
+        sleep 1
+        n=$((n + 1))
+    done
+    sleep 2
+    rm -f /tmp/fpv.hold
+}
 trap cleanup EXIT INT TERM
 
 : > /tmp/fpv.hold
 fpv-stop >/dev/null 2>&1
+
+# Wait for the old player to actually be gone. MI teardown is not instant --
+# it has been measured at two seconds -- and starting on top of it produces
+# "VideoLayer:0 is binded", "chn[0] has been created", then a buffer release
+# racing the device unregister. fpv-start sleeps 1 here; that is not always
+# enough, so wait for the process instead of guessing.
+n=0
+while pidof mi-player >/dev/null 2>&1 && [ $n -lt 15 ]; do
+    sleep 1
+    n=$((n + 1))
+done
+
 killall fb-splash 2>/dev/null
 # fpv-stop leaves its "link lost" splash on the OSD layer, which sits above the
 # video plane at full alpha and would hide the replay.
 [ -e /dev/fb0 ] && dd if=/dev/zero of=/dev/fb0 bs=64k 2>/dev/null
 
-echo "dvr-play: $FILE  (Ctrl-C to stop; loops until then)"
+# Runtime counter over the picture. The font has no lowercase.
+if [ -x /bin/fb-splash ] && [ -e /dev/fb0 ]; then
+    fb-splash --timer "$(basename "$FILE" .h265 | tr 'a-z' 'A-Z')" >/dev/null 2>&1 &
+fi
+
+echo "dvr-play: $FILE  (Ctrl-C to stop)"
 mi-player -f "$FILE" -s "$SRC" ${FPS:+-fps "$FPS"} $OPTS

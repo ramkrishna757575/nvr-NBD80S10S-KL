@@ -55,7 +55,16 @@ if [ -f /tmp/fpv.pid ]; then
     rm -f /tmp/fpv.pid
 fi
 killall mi-player mi-player-alkaid 2>/dev/null
-sleep 1
+# Wait for it to actually go, then let the driver settle. MI teardown outlives
+# the process -- it has been seen still releasing buffers two seconds after the
+# exit -- and starting the next player into that gives "VideoLayer:0 is binded",
+# "chn[0] has been created", and then a buffer release racing dev unregister.
+n=0
+while pidof mi-player >/dev/null 2>&1 && [ $n -lt 15 ]; do
+    sleep 1
+    n=$((n + 1))
+done
+sleep 2
 
 # The OSD layer sits above the video plane at constant alpha 255, so the splash
 # would simply hide the picture. Zero it -- an all-zero ARGB1555 pixel has

@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
@@ -480,6 +481,53 @@ static int wfb_loop(void)
     return 0;
 }
 
+/* Elapsed time, bottom right, over whatever is playing.
+ *
+ * Counted from when this starts rather than from the stream: replay is paced by
+ * the player at a fixed rate, so wall clock and playback position stay in step,
+ * and nothing has to be plumbed between the two processes.
+ *
+ * The font has no lowercase, so a label has to arrive uppercased. */
+static int timer_loop(const char *label)
+{
+    int scale, line_h, x0, y0, w;
+    time_t t0 = time(NULL);
+
+    scale = (int)vinfo.xres / 320;
+    if (scale < 2)
+        scale = 2;
+    line_h = 9 * scale;
+    w      = 22 * 6 * scale;
+    x0     = (int)vinfo.xres - w - 20;
+    if (x0 < 0)
+        x0 = 0;
+    y0     = (int)vinfo.yres - line_h - 16;
+    if (y0 < 0)
+        y0 = 0;
+
+    for (;;) {
+        unsigned long t = (unsigned long)(time(NULL) - t0);
+        char buf[64], clk[16];
+
+        if (t >= 3600)
+            snprintf(clk, sizeof(clk), "%lu:%02lu:%02lu",
+                     t / 3600, (t / 60) % 60, t % 60);
+        else
+            snprintf(clk, sizeof(clk), "%02lu:%02lu", t / 60, t % 60);
+
+        if (label && *label)
+            snprintf(buf, sizeof(buf), "%s  %s", label, clk);
+        else
+            snprintf(buf, sizeof(buf), "%s", clk);
+
+        clear_transparent(x0, y0, w, line_h);
+        draw_text(x0, y0, buf, scale, pack(255, 255, 255));
+        sleep(1);
+    }
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     const char *dev = "/dev/fb0";
@@ -527,6 +575,10 @@ int main(int argc, char **argv)
        everything outside the glyphs has to stay transparent. */
     if (argc > 1 && strcmp(argv[1], "--wfb") == 0)
         return wfb_loop();
+
+    /* Runtime counter over the picture, for replay. */
+    if (argc > 1 && strcmp(argv[1], "--timer") == 0)
+        return timer_loop(argc > 2 ? argv[2] : NULL);
 
     /* Live counters, refreshed once a second, until killed. */
     if (argc > 1 && strcmp(argv[1], "--stats") == 0) {

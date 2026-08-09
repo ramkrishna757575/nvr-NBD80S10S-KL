@@ -825,6 +825,7 @@ int main(int argc, char **argv)
     const size_t fcap = 1024 * 1024;    /* has to hold one access unit */
     size_t ffill = 0, fpos = 0;
     int fps = 60;                       /* replay rate; -fps overrides */
+    int loop = 0;                       /* -loop: restart at EOF */
     unsigned pts_hz;
 
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -851,6 +852,8 @@ int main(int argc, char **argv)
             if (fps < 1)
                 fps = 60;
         }
+        else if (!strcmp(argv[i], "-loop"))
+            loop = 1;
         else if (!strcmp(argv[i], "-stream"))
             vmode = E_MI_VDEC_VIDEO_MODE_STREAM;
         else if (!strcmp(argv[i], "-noscale"))
@@ -871,7 +874,7 @@ int main(int argc, char **argv)
                 "usage: %s [-f file | -u port | -r rtsp://url] [-h265] [-raw]\n"
                 "               [-stream] [-d out] [-s WxH] [720]\n"
                 "  -f FILE   replay an Annex-B elementary stream from a file,\n"
-                "            one access unit per frame, looping (test mode)\n"
+                "            one access unit per frame, stopping at the end\n"
                 "  -u PORT   listen for UDP video (default 5600)\n"
                 "  -r URL    pull via RTSP: rtsp://[user:pass@]host[:port][/path].\n"
                 "            OpenIPC/majestic sends nothing until PLAY, so a bare\n"
@@ -884,6 +887,7 @@ int main(int argc, char **argv)
                 "            Same bytes the decoder gets: an Annex-B elementary\n"
                 "            stream, playable as-is and remuxable losslessly.\n"
                 "  -fps N    replay rate, default 60. Only paces -f.\n"
+                "  -loop     restart -f at the end instead of stopping\n"
                 "  -s WxH    source resolution, e.g. 1280x720. The decoder\n"
                 "            cannot scale up, so it must decode at the stream's\n"
                 "            own size; DIVP then scales to the output.\n"
@@ -1111,8 +1115,8 @@ int main(int argc, char **argv)
             fprintf(stderr, "out of memory\n");
             return 1;
         }
-        printf("feeding from %s, %llu bytes, looping\n",
-               file, (unsigned long long)end);
+        printf("feeding from %s, %llu bytes%s\n",
+               file, (unsigned long long)end, loop ? ", looping" : "");
     } else if (rtsp_url) {
         /* Already connected above. Time out reads so the session keepalive
            still runs if the video stalls -- otherwise the server drops us. */
@@ -1181,9 +1185,14 @@ int main(int argc, char **argv)
                     perror(file);
                     break;
                 }
-                /* End of the recording. Rewind and keep filling, so the window
-                   spans the join and the loop has no gap in it. Once only: a
-                   file shorter than the window would otherwise never stop. */
+                /* End of the recording. Without -loop that is the end of the
+                   run: stop topping up and let the window drain, so the last
+                   access unit still reaches the decoder. */
+                if (!loop)
+                    break;
+                /* Rewind and keep filling, so the window spans the join and
+                   the loop has no gap in it. Once only: a file shorter than
+                   the window would otherwise never stop. */
                 if (wrapped++)
                     break;
                 lseek(in_fd, 0, SEEK_SET);
