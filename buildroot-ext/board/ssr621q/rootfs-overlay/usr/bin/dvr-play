@@ -53,12 +53,15 @@ cleanup() {
         n=$((n + 1))
     done
     sleep 2
+    # The replay player took HDMI down with it. Restore it before releasing the
+    # hold, so the screen is alive whether or not the live player comes back.
+    display-up
     rm -f /tmp/fpv.hold
 }
 trap cleanup EXIT INT TERM
 
 : > /tmp/fpv.hold
-fpv-stop >/dev/null 2>&1
+FPV_KEEP_DISPLAY_DOWN=1 fpv-stop >/dev/null 2>&1
 
 # Wait for the old player to actually be gone. MI teardown is not instant --
 # it has been measured at two seconds -- and starting on top of it produces
@@ -72,6 +75,8 @@ while pidof mi-player >/dev/null 2>&1 && [ $n -lt 15 ]; do
 done
 
 killall fb-splash 2>/dev/null
+# mi-disp-init holds /dev/mi_hdmi, which the replay player brings up itself.
+killall mi-disp-init 2>/dev/null
 # fpv-stop leaves its "link lost" splash on the OSD layer, which sits above the
 # video plane at full alpha and would hide the replay.
 [ -e /dev/fb0 ] && dd if=/dev/zero of=/dev/fb0 bs=64k 2>/dev/null

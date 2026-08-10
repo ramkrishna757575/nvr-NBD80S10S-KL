@@ -1,0 +1,38 @@
+#!/bin/sh
+# Bring HDMI back up after a player exits.
+#
+# mi-player opens /dev/mi_hdmi and starts the transmitter itself, which is why
+# fpv-start kills mi-disp-init before starting it. The side effect is that the
+# player becomes the only client holding that device, so when it goes the driver
+# mutes the output and switches the clocks off:
+#
+#   MDrv_HDMITx_SetAVMUTE
+#   DrvHdmitxOsSetClkOff 1310, [Hdmitx] 3-1, CLK_hdmi Off
+#
+# After that the screen is dead and anything drawn to the OSD layer lands
+# nowhere. mi-disp-init exists purely to hold that fd open, so start it again.
+#
+# Idempotent, so it is safe on any path that may or may not have torn HDMI down.
+pidof mi-disp-init >/dev/null 2>&1 && exit 0
+
+MODE=""
+for arg in $(cat /proc/cmdline); do
+	case $arg in
+		disp=720) MODE=720 ;;
+		disp=off) exit 0 ;;
+	esac
+done
+
+mi-disp-init $MODE > /tmp/mi-disp-init.log 2>&1 &
+
+# Poll rather than sleep a fixed time: MI_HDMI_Start only returns once the
+# transmitter has read EDID and finished its HPD handshake, which varies with
+# the monitor.
+n=0
+while [ $n -lt 15 ]; do
+	grep -q "MI_HDMI_Start" /tmp/mi-disp-init.log 2>/dev/null && break
+	n=$((n + 1))
+	sleep 1
+done
+
+grep -q "MI_HDMI_Start.*ok" /tmp/mi-disp-init.log 2>/dev/null

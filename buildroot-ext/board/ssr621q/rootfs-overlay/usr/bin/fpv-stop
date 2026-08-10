@@ -8,6 +8,12 @@ fi
 rm -f /tmp/fpv.url
 killall mi-player mi-player-alkaid 2>/dev/null
 echo "fpv: link down, player stopped" > /dev/console
+
+# The player held /dev/mi_hdmi open, so the transmitter stopped when it did and
+# the splash below would be drawn to a dead output. Callers that are about to
+# start their own player skip this, since it would only be torn down again.
+[ "$FPV_KEEP_DISPLAY_DOWN" = 1 ] || display-up
+
 [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] && \
     fb-splash -p "OpenIPC Ground Station" \
                  "Link lost" \

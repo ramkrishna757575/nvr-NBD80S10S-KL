@@ -1054,8 +1054,22 @@ int main(int argc, char **argv)
         }
     }
 
-    signal(SIGINT, on_signal);
-    signal(SIGTERM, on_signal);
+    /* sigaction rather than signal(): glibc's signal() implies SA_RESTART,
+       which silently restarts the blocking read instead of failing it with
+       EINTR. The loop then never re-tests `running`, so with no video arriving
+       the player cannot be killed at all -- fpv-stop reports it stopped, the
+       process lives on holding /dev/mi_hdmi, and the next player starts on top
+       of a pipeline that was never torn down. */
+    {
+        struct sigaction sa;
+
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = on_signal;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
 
     /* RTSP is negotiated before the decoder is configured, because the SDP is
        what says whether this is H.264 or H.265 and VDEC needs the codec in its
@@ -1332,6 +1346,11 @@ int main(int argc, char **argv)
                     continue;
                 }
                 if (got < 0) {
+                    if (errno == EINTR) {
+                        if (!running)
+                            break;
+                        continue;
+                    }
                     perror(file);
                     break;
                 }
