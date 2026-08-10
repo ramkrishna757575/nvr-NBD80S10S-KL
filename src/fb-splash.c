@@ -38,7 +38,7 @@ static unsigned char *fbmem;
 
 /* Build a pixel from the driver's own channel offsets, so we do not have to
    hardcode ARGB1555 vs RGB565 vs 32bpp. */
-static unsigned long pack(unsigned r, unsigned g, unsigned b)
+static unsigned long pack_a(unsigned r, unsigned g, unsigned b, unsigned a)
 {
     unsigned long v = 0;
 
@@ -46,11 +46,22 @@ static unsigned long pack(unsigned r, unsigned g, unsigned b)
     v |= (unsigned long)(g >> (8 - vinfo.green.length)) << vinfo.green.offset;
     v |= (unsigned long)(b >> (8 - vinfo.blue.length))  << vinfo.blue.offset;
 
-    /* Opaque, or the OSD layer blends away to nothing on ARGB1555. */
+    /* One alpha bit rounds to all or nothing; four or eight carry the value. */
     if (vinfo.transp.length)
-        v |= ((1UL << vinfo.transp.length) - 1) << vinfo.transp.offset;
+        v |= (unsigned long)(a >> (8 - vinfo.transp.length)) << vinfo.transp.offset;
 
     return v;
+}
+
+/* True where the panel can hold a partly transparent pixel at all. */
+static int soft_alpha(void)
+{
+    return vinfo.transp.length >= 4;
+}
+
+static unsigned long pack(unsigned r, unsigned g, unsigned b)
+{
+    return pack_a(r, g, b, 255);
 }
 
 static void put_pixel(int x, int y, unsigned long c)
@@ -94,6 +105,12 @@ static void fill_rect(int x, int y, int w, int h, unsigned long c)
 static void fill_scrim(int x, int y, int w, int h, unsigned long c)
 {
     int i, j;
+
+    /* With real alpha the panel is simply drawn translucent. */
+    if (soft_alpha()) {
+        fill_rect(x, y, w, h, c);
+        return;
+    }
 
     for (j = 0; j < h; j++)
         for (i = 0; i < w; i++)
@@ -240,7 +257,10 @@ static void draw_text(int x, int y, const char *s, int scale, unsigned long c)
 
                     if (a < 8)
                         continue;
-                    if (a >= 248)
+                    if (soft_alpha())
+                        fill_rect(x + col * scale, y + row * scale, scale, scale,
+                                  pack_a(p[0], p[1], p[2], (unsigned)a));
+                    else if (a >= 248)
                         fill_rect(x + col * scale, y + row * scale, scale, scale,
                                   pack(p[0], p[1], p[2]));
                     else
@@ -259,18 +279,35 @@ static void draw_text(int x, int y, const char *s, int scale, unsigned long c)
 
             for (row = 0; row < FONT_H; row++) {
                 for (col = 0; col < FONT_W; col++) {
-                    unsigned char byte = g[row][col >> 1];
-                    int cov = (col & 1) ? (byte & 0x0F) : (byte >> 4);
+                    unsigned char byte = g[row][col];
+                    int gl = byte >> 4;         /* glyph coverage */
+                    int ol = byte & 0x0F;       /* its outline */
+                    int cov, alpha;
                     unsigned long p;
 
+                    if (!gl && !ol)
+                        continue;
+
+                    /* The glyph sits over its own black outline. Compositing
+                       the two gives coverage gl + ol(1-gl), and since the
+                       outline is black only the glyph contributes colour. */
+                    cov = gl * 15 + ol * (15 - gl);
                     if (cov == 0)
                         continue;
-                    if (cov == 15)
-                        p = c;
+                    alpha = cov * 255 / 225;
+
+                    if (soft_alpha())
+                        p = pack_a((unsigned)(fr  * gl * 15 / cov),
+                                   (unsigned)(fgc * gl * 15 / cov),
+                                   (unsigned)(fbc * gl * 15 / cov),
+                                   (unsigned)alpha);
+                    else if (alpha < 128)
+                        continue;
                     else
-                        p = pack((unsigned)((fr  * cov + br  * (15 - cov)) / 15),
-                                 (unsigned)((fgc * cov + bgc * (15 - cov)) / 15),
-                                 (unsigned)((fbc * cov + bbc * (15 - cov)) / 15));
+                        /* All or nothing: mix against the panel behind instead. */
+                        p = pack((unsigned)((fr  * gl + br  * (15 - gl)) / 15),
+                                 (unsigned)((fgc * gl + bgc * (15 - gl)) / 15),
+                                 (unsigned)((fbc * gl + bbc * (15 - gl)) / 15));
 
                     fill_rect(x + col * scale, y + row * scale, scale, scale, p);
                 }
@@ -282,15 +319,21 @@ static void draw_text(int x, int y, const char *s, int scale, unsigned long c)
 
 /* Text on its own scrim, sized to the string rather than the whole strip. An
    atlas glyph is already outlined, so it needs no panel behind it. */
-static void draw_label(int x, int y, const char *s, int scale,
-                       unsigned long fg, unsigned long scrim)
+static void draw_label(int x, int y, const char *s, int scale, unsigned long fg)
 {
     int pad = 6;
     int tw  = (int)strlen(s) * fw * scale;
 
+    /* Atlas glyphs bring their own outline, and so now does the built-in font,
+       so the panel is only there to lift text off a busy picture. Translucent
+       where the format allows it, dithered where a pixel can only be all or
+       nothing. */
     if (!atlas) {
+        unsigned long scrim = soft_alpha() ? pack_a(24, 24, 24, 110)
+                                           : pack(32, 32, 32);
+
         fill_scrim(x - pad, y - 2, tw + pad * 2, fh * scale + 4, scrim);
-        text_bg = scrim;
+        text_bg = soft_alpha() ? pack(0, 0, 0) : scrim;
     } else {
         text_bg = pack(0, 0, 0);
     }
@@ -589,7 +632,6 @@ static int wfb_loop(void)
         unsigned long green = pack(0, 255, 0);
         unsigned long amber = pack(255, 200, 0);
         unsigned long red   = pack(255, 80, 80);
-        unsigned long scrim = pack(32, 32, 32);
         int n = read_fields(WFB_STATUS, f, WFB_FIELDS);
         int y = y0;
 
@@ -598,18 +640,18 @@ static int wfb_loop(void)
         /* rssi is "-" until a packet actually decrypts, so it doubles as the
            "is this link real" test -- the same one wfb-start keys the player on. */
         if (n < WFB_FIELDS || strcmp(f[3], "-") == 0) {
-            draw_label(x0, y, "No link", scale, red, scrim);
+            draw_label(x0, y, "No link", scale, red);
         } else {
             int rssi = atoi(f[3]);
             int lost = atoi(f[8]);
 
             snprintf(buf, sizeof(buf), "%s dBm  SNR %s  MCS%s", f[3], f[4], f[1]);
             draw_label(x0, y, buf, scale,
-                       rssi > -70 ? green : (rssi > -80 ? amber : red), scrim);
+                       rssi > -70 ? green : (rssi > -80 ? amber : red));
             y += line_h;
 
             snprintf(buf, sizeof(buf), "%s kbps  FEC %s  Lost %s", f[6], f[7], f[8]);
-            draw_label(x0, y, buf, scale, lost > 0 ? red : white, scrim);
+            draw_label(x0, y, buf, scale, lost > 0 ? red : white);
         }
 
         sleep(1);
@@ -655,7 +697,7 @@ static int timer_loop(const char *label)
 
         clear_transparent(x0 - 8, y0 - 4, w + 16, line_h + 8);
         /* Green: white sits on top of bright sky and vanishes. */
-        draw_label(x0, y0, buf, scale, pack(0, 255, 0), pack(32, 32, 32));
+        draw_label(x0, y0, buf, scale, pack(0, 255, 0));
         sleep(1);
     }
 

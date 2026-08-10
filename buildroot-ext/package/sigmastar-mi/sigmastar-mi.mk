@@ -60,6 +60,15 @@ define SIGMASTAR_MI_INSTALL_CONFIG
 		ln -sf config_tool $(TARGET_DIR)/config/$(l)
 	)
 	rm -f $(TARGET_DIR)/config/misc/*.jpg $(TARGET_DIR)/config/misc/*.mp3
+
+	# The OSD window ships as ARGB1555 (format 6), whose single alpha bit makes
+	# a pixel either fully opaque or absent -- no translucent panel, no
+	# anti-aliased edge. ARGB4444 (format 2) is the same 16bpp, so the buffer
+	# size is unchanged, and trades colour depth no status text will miss for
+	# 16 levels of alpha. Patched here rather than in vendor/, which is
+	# checksummed and has to stay as it shipped.
+	sed -i 's/^FB_HWWIN_FORMAT = 6$$/FB_HWWIN_FORMAT = 2/' \
+		$(TARGET_DIR)/config/fbdev.ini
 endef
 
 # config_tool is a stock XM binary linked against uClibc, and it has to stay that
