@@ -13,7 +13,7 @@ GS_TOOLS_VERSION = 1.0
 GS_TOOLS_SITE = $(BR2_EXTERNAL_SSR621Q_FPV_PATH)/../src
 GS_TOOLS_SITE_METHOD = local
 GS_TOOLS_LICENSE = GPL-2.0
-GS_TOOLS_DEPENDENCIES = sigmastar-mi
+GS_TOOLS_DEPENDENCIES = sigmastar-mi libpng
 
 GS_TOOLS_PUBKEY = $(BR2_EXTERNAL_SSR621Q_FPV_PATH)/../signing-key.pub
 
@@ -44,8 +44,10 @@ define GS_TOOLS_BUILD_CMDS
 	# Deliberately dependency-free: the wfb driver implements IW_MODE_MONITOR
 	# through wireless extensions, so this avoids cross-compiling iw + libnl.
 	$(TARGET_CC) -O2 -o $(@D)/wifi-monitor $(@D)/wifi-monitor.c
-	$(TARGET_CC) -O2 -o $(@D)/fb-splash $(@D)/fb-splash.c
-	$(TARGET_CC) -O2 -o $(@D)/alink-gs $(@D)/alink-gs.c
+        # libpng so the OSD can read a msposd font atlas at runtime. It still has
+        # its own font compiled in, and falls back to it when no file is there.
+        $(TARGET_CC) -O2 -o $(@D)/fb-splash $(@D)/fb-splash.c \
+                -I$(STAGING_DIR)/usr/include -L$(STAGING_DIR)/usr/lib -lpng16 -lz
 
 	$(TARGET_CC) -O2 -o $(@D)/wfb-keyinfo -I$(@D)/tweetnacl \
 		$(@D)/wfb-keyinfo.c $(@D)/tweetnacl/tweetnacl.c

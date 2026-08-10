@@ -57,6 +57,19 @@ alink_rx_radio_port = 32
 
 # On-screen link stats over the video: rssi, snr, MCS, bitrate, FEC and losses.
 # Only the glyphs are drawn, so the picture shows through around them.
+#
+# The OSD has a font built in, and will also load a Betaflight/INAV glyph atlas
+# if one is present -- the same files msposd uses, so any of those font packs
+# works here unchanged:
+#
+#   mkdir -p /usr/share/fonts
+#   curl -k -L -o /usr/share/fonts/font_hd.png \
+#     https://raw.githubusercontent.com/openipc/msposd/main/fonts/font_btfl_hd.png
+#
+# font_hd.png is the 720p set and font.png the 1080p one, as msposd names them.
+# Those glyphs carry a black outline, which is what keeps them readable over a
+# bright sky. Their lowercase slots hold OSD symbols rather than letters, so
+# text is drawn uppercase whenever an atlas is in use.
 osd = 1
 
 # Record the incoming video to a USB stick as a raw H.265 elementary stream.

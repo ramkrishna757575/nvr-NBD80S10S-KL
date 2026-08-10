@@ -71,6 +71,10 @@ BR2_PACKAGE_MBEDTLS=y
 BR2_PACKAGE_LIBCURL=y
 BR2_PACKAGE_LIBCURL_CURL=y
 BR2_PACKAGE_LIBCURL_MBEDTLS=y
+
+# libpng, so the OSD can load a Betaflight/INAV font atlas at runtime the way
+# msposd does -- the same font packs, dropped in without rebuilding. Pulls zlib.
+BR2_PACKAGE_LIBPNG=y
 # Only http and https are wanted. These three are on by default and pull in
 # proxies, a cookie store, and LDAP/RTSP/SMB, none of which fetches a firmware
 # image.
