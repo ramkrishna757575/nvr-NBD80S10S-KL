@@ -14,8 +14,11 @@ echo "fpv: link down, player stopped" > /dev/console
 # start their own player skip this, since it would only be torn down again.
 [ "$FPV_KEEP_DISPLAY_DOWN" = 1 ] || display-up
 
+# Backgrounded and holding /dev/fb0: the driver drops the window's contents when
+# the last user closes it, so a splash that exits leaves the bare video plane
+# showing -- which is solid red once a player has run.
 [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] && \
-    fb-splash -p "OpenIPC Ground Station" \
-                 "Link lost" \
-                 "Waiting for air unit" >/dev/null 2>&1
+    (setsid fb-splash -p --hold "OpenIPC Ground Station" \
+                            "Link lost" \
+                            "Waiting for air unit" >/dev/null 2>&1 &)
 exit 0

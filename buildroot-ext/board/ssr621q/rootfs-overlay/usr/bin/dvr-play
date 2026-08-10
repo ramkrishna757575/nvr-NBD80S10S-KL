@@ -56,6 +56,12 @@ cleanup() {
     # The replay player took HDMI down with it. Restore it before releasing the
     # hold, so the screen is alive whether or not the live player comes back.
     display-up
+    # Something has to stay on the OSD layer or the bare video plane shows
+    # through, and after a player that is an uninitialised buffer -- solid red.
+    [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] && \
+        (setsid fb-splash -p --hold "OpenIPC Ground Station" \
+                                "Replay finished" \
+                                "Waiting for air unit" >/dev/null 2>&1 &)
     rm -f /tmp/fpv.hold
 }
 trap cleanup EXIT INT TERM

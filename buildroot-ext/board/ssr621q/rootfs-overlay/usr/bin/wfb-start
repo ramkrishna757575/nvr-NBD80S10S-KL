@@ -131,7 +131,10 @@ wfb_state() {
 splash() {
     [ -x /bin/fb-splash ] && [ -e /dev/fb0 ] || return 0
     killall fb-splash 2>/dev/null
-    fb-splash -p "OpenIPC Ground Station" "$1" "$2" >/dev/null 2>&1
+    # --hold, backgrounded: the driver drops the window's contents when the last
+    # user closes /dev/fb0, so a splash that exits leaves the OSD blank and the
+    # bare video plane showing through -- solid red once a player has run.
+    (setsid fb-splash -p --hold "OpenIPC Ground Station" "$1" "$2" >/dev/null 2>&1 &)
 }
 (
     last=start

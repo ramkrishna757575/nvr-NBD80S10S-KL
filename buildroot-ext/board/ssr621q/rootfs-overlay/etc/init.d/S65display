@@ -52,11 +52,18 @@ case "$1" in
 		eth_ip=$(cat /tmp/eth-ip 2>/dev/null)
 		[ -n "$eth_ip" ] || eth_ip=$(ifconfig eth0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')
 		[ -n "$eth_ip" ] || eth_ip="DHCP PENDING"
-		fb-splash -p "OpenIPC Ground Station" \
-		             "SSR621Q HDMI OK" \
-		             "SSH $eth_ip" > /tmp/fb-splash.log 2>&1 \
-			&& echo "display: splash drawn" \
-			|| echo "display: splash failed -- see /tmp/fb-splash.log"
+		# --hold, backgrounded: the driver drops the window's contents
+		# when the last user closes /dev/fb0, so a splash that exits
+		# leaves nothing on screen. fpv-start kills it when video starts.
+		(setsid fb-splash -p --hold "OpenIPC Ground Station" \
+		                            "SSR621Q HDMI OK" \
+		                            "SSH $eth_ip" > /tmp/fb-splash.log 2>&1 &)
+		sleep 1
+		if pidof fb-splash > /dev/null 2>&1; then
+			echo "display: splash drawn"
+		else
+			echo "display: splash failed -- see /tmp/fb-splash.log"
+		fi
 	fi
 	;;
   stop)

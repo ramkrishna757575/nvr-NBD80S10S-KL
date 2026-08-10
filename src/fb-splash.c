@@ -576,7 +576,7 @@ static int timer_loop(const char *label)
 int main(int argc, char **argv)
 {
     const char *dev = "/dev/fb0";
-    int fd, i, bars = 0, y, scale;
+    int fd, i, bars = 0, y, scale, hold = 0;
     long screensize;
 
     fd = open(dev, O_RDWR);
@@ -616,6 +616,13 @@ int main(int argc, char **argv)
         argc--;
     }
 
+    /* Stay alive after drawing, holding /dev/fb0 open so the picture survives. */
+    if (argc > 1 && strcmp(argv[1], "--hold") == 0) {
+        hold = 1;
+        argv++;
+        argc--;
+    }
+
     /* Overlay on top of running video. Deliberately does not clear the screen:
        everything outside the glyphs has to stay transparent. */
     if (argc > 1 && strcmp(argv[1], "--wfb") == 0)
@@ -630,7 +637,7 @@ int main(int argc, char **argv)
         const char *iface = (argc > 2) ? argv[2] : "wlan0";
 
         fill_rect(0, 0, (int)vinfo.xres, (int)vinfo.yres, pack(0, 0, 40));
-    text_bg = pack(0, 0, 40);
+        text_bg = pack(0, 0, 40);
         return stats_loop(iface);
     }
 
@@ -665,6 +672,19 @@ int main(int argc, char **argv)
         read_ipv4(MGMT_IFACE, mgmt, sizeof(mgmt));
         snprintf(line, sizeof(line), "IP %s", mgmt);
         draw_text(30, y, line, scale, pack(255, 255, 255));
+    }
+
+    /* The sstar fbdev driver drops the window's contents when the last user
+       closes /dev/fb0 -- verified on hardware: a one-shot splash reads back as
+       all zeroes the moment it exits, while a long-running overlay stays put.
+       So a static splash has to keep the fd open to remain on screen. It went
+       unnoticed for as long as the video plane behind it was black; once a
+       player has run and left an uninitialised buffer there, what shows
+       through is a solid red screen. */
+    if (hold) {
+        fflush(stdout);
+        for (;;)
+            pause();
     }
 
     munmap(fbmem, screensize);
