@@ -27,3 +27,15 @@ grep -q '^FB_HWWIN_FORMAT = 2$' "$FBDEV" || {
 	echo "post-build: fbdev.ini still not ARGB4444" >&2
 	exit 1
 }
+
+# fpv-start passes -rec whenever dvr=1, and a mi-player that does not know the
+# flag answers with its usage text and exits -- a restart loop and a black
+# screen, with nothing in the log that names the cause. Nothing else checks this
+# contract between the script and the binary, and a stale build breaks it
+# silently.
+for flag in -rec -fps; do
+	grep -qF -- "$flag" "$TARGET/bin/mi-player" || {
+		echo "post-build: /bin/mi-player has no $flag -- stale build?" >&2
+		exit 1
+	}
+done

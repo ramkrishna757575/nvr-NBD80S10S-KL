@@ -45,6 +45,7 @@ define GS_TOOLS_BUILD_CMDS
 	# through wireless extensions, so this avoids cross-compiling iw + libnl.
 	$(TARGET_CC) -O2 -o $(@D)/wifi-monitor $(@D)/wifi-monitor.c
 	$(TARGET_CC) -O2 -o $(@D)/fb-splash $(@D)/fb-splash.c
+	$(TARGET_CC) -O2 -o $(@D)/alink-gs $(@D)/alink-gs.c
 
 	$(TARGET_CC) -O2 -o $(@D)/wfb-keyinfo -I$(@D)/tweetnacl \
 		$(@D)/wfb-keyinfo.c $(@D)/tweetnacl/tweetnacl.c

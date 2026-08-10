@@ -94,9 +94,18 @@ echo "=== [3/3] Building ==="
 # BR2_EXTERNAL only has to be passed when the configuration is created; it is
 # recorded in the output directory from then on.
 make -C $BR_DIR O=$BR_OUT BR2_EXTERNAL=$EXT_DIR ssr621q_fpv_defconfig
-# The rsync of the vendor tree is a stamped, once-only step, so without this a
-# later patch to build/sdk is never seen and the build quietly uses the old copy.
+# The rsync of a local source tree is a stamped, once-only step, so without this
+# a later edit is never seen and the build quietly uses the old copy, producing
+# an image that looks fine and ships stale binaries.
+#
+# The kernel only needs its rsync stamp dropped; buildroot's stamps are ordered,
+# so a newer rsync stamp invalidates the build that follows it, and the kernel
+# then rebuilds incrementally.
 rm -f $BR_OUT/build/linux-custom/.stamp_rsynced
+# gs-tools is rebuilt from scratch instead. It is our own src/ and takes seconds,
+# and re-syncing in place would re-run the patch hooks of any package that has
+# them and fail on patches already applied.
+rm -rf $BR_OUT/build/gs-tools-1.0
 make -C $BR_OUT -j$JOBS
 
 # post-image.sh has already validated and signed these; copy them out under the

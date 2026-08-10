@@ -30,6 +30,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "mi_common_datatype.h"
 #include "mi_sys.h"
@@ -43,6 +44,159 @@
 #define DISP_PORT   0
 #define VDEC_CHN    0
 #define DIVP_CHN    0
+
+/* ---- recorder ----------------------------------------------------------
+ *
+ * USB sticks stall. Measured on the HP v237w while recording at the video
+ * bitrate: one write in 200 blocked for 111ms, the rest were immediate. That is
+ * the stick erasing a block, and no amount of buffering inside it avoids it.
+ *
+ * Writing straight from the decode loop turned that stall into a decode stall
+ * -- 111ms is six or seven frames the decoder never received, seen as a freeze.
+ * So the loop only copies into a ring here and a writer thread drains it; the
+ * stall is absorbed by the ring instead of the picture.
+ *
+ * 4MB holds well over a second at 3MB/s, so it swallows a stall two orders of
+ * magnitude worse than the one measured. If it ever does fill, the frame is
+ * dropped and counted: recording must never take the video down.
+ */
+#define REC_RING (4u * 1024 * 1024)
+
+static unsigned char     *rec_ring;
+static unsigned long long rec_head;     /* bytes produced, never wraps */
+static unsigned long long rec_tail;     /* bytes consumed */
+static int                rec_fd = -1;
+static int                rec_on;
+static int                rec_quit;
+static unsigned long      rec_dropped;
+static pthread_t          rec_thread;
+static pthread_mutex_t    rec_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t     rec_wake = PTHREAD_COND_INITIALIZER;
+
+static size_t rec_used(void) { return (size_t)(rec_head - rec_tail); }
+
+static int rec_is_on(void)
+{
+    int on;
+
+    pthread_mutex_lock(&rec_lock);
+    on = rec_on;
+    pthread_mutex_unlock(&rec_lock);
+    return on;
+}
+
+/* The producer only ever fills [head, tail+RING) and the consumer only reads
+   [tail, head), so the write below runs outside the lock without racing it --
+   which is the point, since it is the call that blocks for 111ms. */
+static void *rec_writer(void *arg)
+{
+    (void)arg;
+
+    for (;;) {
+        size_t off, n;
+        ssize_t w;
+
+        pthread_mutex_lock(&rec_lock);
+        while (rec_used() == 0 && !rec_quit)
+            pthread_cond_wait(&rec_wake, &rec_lock);
+        if (rec_used() == 0) {
+            pthread_mutex_unlock(&rec_lock);
+            break;
+        }
+        off = (size_t)(rec_tail % REC_RING);
+        n   = rec_used();
+        if (n > REC_RING - off)
+            n = REC_RING - off;
+        pthread_mutex_unlock(&rec_lock);
+
+        w = write(rec_fd, rec_ring + off, n);
+        if (w < 0) {
+            perror("dvr");
+            pthread_mutex_lock(&rec_lock);
+            rec_on = 0;
+            pthread_mutex_unlock(&rec_lock);
+            break;
+        }
+
+        pthread_mutex_lock(&rec_lock);
+        rec_tail += (unsigned long long)w;
+        pthread_mutex_unlock(&rec_lock);
+    }
+    return NULL;
+}
+
+static int rec_start(const char *path)
+{
+    rec_fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (rec_fd < 0) {
+        perror(path);
+        return -1;
+    }
+    rec_ring = malloc(REC_RING);
+    if (!rec_ring) {
+        fprintf(stderr, "dvr: no memory for the write buffer\n");
+        close(rec_fd);
+        rec_fd = -1;
+        return -1;
+    }
+    rec_on = 1;
+    if (pthread_create(&rec_thread, NULL, rec_writer, NULL) != 0) {
+        perror("dvr: pthread_create");
+        free(rec_ring);
+        rec_ring = NULL;
+        close(rec_fd);
+        rec_fd = -1;
+        rec_on = 0;
+        return -1;
+    }
+    return 0;
+}
+
+static void rec_push(const unsigned char *p, size_t n)
+{
+    size_t off, first;
+
+    pthread_mutex_lock(&rec_lock);
+    if (!rec_on || n > REC_RING - rec_used()) {
+        if (rec_on)
+            rec_dropped++;
+        pthread_mutex_unlock(&rec_lock);
+        return;
+    }
+    off   = (size_t)(rec_head % REC_RING);
+    first = REC_RING - off;
+    if (first > n)
+        first = n;
+    memcpy(rec_ring + off, p, first);
+    if (n > first)
+        memcpy(rec_ring, p + first, n - first);
+    rec_head += n;
+    pthread_cond_signal(&rec_wake);
+    pthread_mutex_unlock(&rec_lock);
+}
+
+static void rec_stop(void)
+{
+    if (!rec_ring)
+        return;
+
+    pthread_mutex_lock(&rec_lock);
+    rec_quit = 1;
+    pthread_cond_signal(&rec_wake);
+    pthread_mutex_unlock(&rec_lock);
+    pthread_join(rec_thread, NULL);
+
+    if (rec_fd >= 0)
+        close(rec_fd);
+    rec_fd = -1;
+    rec_on = 0;
+    free(rec_ring);
+    rec_ring = NULL;
+
+    if (rec_dropped)
+        printf("dvr: dropped %lu frames, the stick could not keep up\n",
+               rec_dropped);
+}
 
 /* ---- raw MI_HDMI ioctl (no libmi_hdmi.so in this SDK) ------------------- */
 #define MI_IOC_WRITE 0x40000000u
@@ -812,7 +966,6 @@ int main(int argc, char **argv)
     const char *file = NULL;
     const char *rtsp_url = NULL;
     const char *dump = NULL;
-    int dump_fd = -1;
     /* -d writes into /tmp, which is RAM on a board with very little of it, so it
        is capped. -rec writes to mounted storage and sets this to the sentinel
        below, meaning no limit. */
@@ -1149,10 +1302,7 @@ int main(int argc, char **argv)
     pts_hz = file ? (unsigned)fps : 30;
 
     if (dump) {
-        dump_fd = open(dump, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (dump_fd < 0)
-            perror(dump);
-        else
+        if (rec_start(dump) == 0)
             printf("writing reassembled stream to %s\n", dump);
     }
 
@@ -1262,23 +1412,16 @@ int main(int argc, char **argv)
         vs.bEndOfFrame  = TRUE;
         vs.bEndOfStream = FALSE;
 
-        if (dump_fd >= 0) {
+        if (rec_is_on()) {
             if (dump_left == 0) {
                 printf("dump limit reached, closing %s\n", dump);
-                close(dump_fd);
-                dump_fd = -1;
+                rec_stop();
             } else {
                 size_t n_w = out_len < dump_left ? out_len : dump_left;
 
-                if (write(dump_fd, out, n_w) < 0) {
-                    /* A stick that filled up or was pulled must not take the
-                       video down with it: give up writing, keep decoding. */
-                    perror(dump);
-                    close(dump_fd);
-                    dump_fd = -1;
-                } else if (dump_left != (size_t)-1) {
+                rec_push(out, n_w);
+                if (dump_left != (size_t)-1)
                     dump_left -= n_w;
-                }
             }
         }
 
@@ -1378,8 +1521,7 @@ int main(int argc, char **argv)
 
     free(buf);
     free(frame);
-    if (dump_fd >= 0)
-        close(dump_fd);
+    rec_stop();
     close(in_fd);
     if (hdmi_fd >= 0)
         close(hdmi_fd);
