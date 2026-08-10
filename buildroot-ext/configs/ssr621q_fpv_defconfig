@@ -117,4 +117,5 @@ BR2_LINUX_KERNEL_IMAGE_NAME="uImage"
 
 # Fails the build on an oversized or malformed image, rather than at the flash
 # prompt with the partition already erased. Signs too when a local key exists.
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/board/ssr621q/post-build.sh"
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_SSR621Q_FPV_PATH)/board/ssr621q/post-image.sh"
