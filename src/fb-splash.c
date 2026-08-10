@@ -84,6 +84,22 @@ static void fill_rect(int x, int y, int w, int h, unsigned long c)
             put_pixel(x + i, y + j, c);
 }
 
+/* A translucent panel behind text. ARGB1555 carries a single alpha bit, so a
+   pixel is either fully there or not there at all -- one in four is dropped
+   instead, which reads as a grey wash with the picture still faintly visible
+   through it. Without something behind it, text over a bright sky is simply
+   gone. Half were dropped first and that was too weak to read against cloud;
+   three quarters is the point where it stays legible. */
+static void fill_scrim(int x, int y, int w, int h, unsigned long c)
+{
+    int i, j;
+
+    for (j = 0; j < h; j++)
+        for (i = 0; i < w; i++)
+            if ((i & 1) || (j & 1))
+                put_pixel(x + i, y + j, c);
+}
+
 static int glyph_index(char ch)
 {
     unsigned char u = (unsigned char)ch;
@@ -93,23 +109,67 @@ static int glyph_index(char ch)
     return u - FONT_FIRST;
 }
 
-/* The font is 16x32, drawn at its native size: scale 1 everywhere except a
-   panel small enough to need otherwise. */
+/* What glyph edges blend towards. The font carries coverage rather than a
+   threshold, but one alpha bit means partial pixels cannot be drawn partly
+   transparent -- so they are mixed against the panel behind instead, which is
+   what stops the edges looking sawn. */
+static unsigned long text_bg;
+
+static void unpack(unsigned long c, int *r, int *g, int *b)
+{
+    unsigned rm = (1u << vinfo.red.length)   - 1;
+    unsigned gm = (1u << vinfo.green.length) - 1;
+    unsigned bm = (1u << vinfo.blue.length)  - 1;
+
+    *r = rm ? (int)((((c >> vinfo.red.offset)   & rm) * 255) / rm) : 0;
+    *g = gm ? (int)((((c >> vinfo.green.offset) & gm) * 255) / gm) : 0;
+    *b = bm ? (int)((((c >> vinfo.blue.offset)  & bm) * 255) / bm) : 0;
+}
+
+/* The font is 16x32 and drawn at its native size, so scale is 1 in practice. */
 static void draw_text(int x, int y, const char *s, int scale, unsigned long c)
 {
-    int col, row;
+    int col, row, fr, fgc, fbc, br, bgc, bbc;
+
+    unpack(c, &fr, &fgc, &fbc);
+    unpack(text_bg, &br, &bgc, &bbc);
 
     for (; *s; s++) {
-        const unsigned short *g = font_bits[glyph_index(*s)];
+        const unsigned char (*g)[FONT_STRIDE] = font_bits[glyph_index(*s)];
 
-        for (row = 0; row < FONT_H; row++)
-            for (col = 0; col < FONT_W; col++)
-                if (g[row] & (1u << (FONT_W - 1 - col)))
-                    fill_rect(x + col * scale, y + row * scale,
-                              scale, scale, c);
+        for (row = 0; row < FONT_H; row++) {
+            for (col = 0; col < FONT_W; col++) {
+                unsigned char byte = g[row][col >> 1];
+                int cov = (col & 1) ? (byte & 0x0F) : (byte >> 4);
+                unsigned long p;
+
+                if (cov == 0)
+                    continue;
+                if (cov == 15)
+                    p = c;
+                else
+                    p = pack((unsigned)((fr  * cov + br  * (15 - cov)) / 15),
+                             (unsigned)((fgc * cov + bgc * (15 - cov)) / 15),
+                             (unsigned)((fbc * cov + bbc * (15 - cov)) / 15));
+
+                fill_rect(x + col * scale, y + row * scale, scale, scale, p);
+            }
+        }
 
         x += FONT_W * scale;
     }
+}
+
+/* Text on its own scrim, sized to the string rather than the whole strip. */
+static void draw_label(int x, int y, const char *s, int scale,
+                       unsigned long fg, unsigned long scrim)
+{
+    int pad = 6;
+    int tw  = (int)strlen(s) * FONT_W * scale;
+
+    fill_scrim(x - pad, y - 2, tw + pad * 2, FONT_H * scale + 4, scrim);
+    text_bg = scrim;
+    draw_text(x, y, s, scale, fg);
 }
 
 static void colour_bars(int y, int h)
@@ -265,6 +325,7 @@ static int stats_loop(const char *iface)
 
         /* Clear just the text block. */
         fill_rect(0, 0, (int)vinfo.xres, y0 + line_h * 13, pack(0, 0, 40));
+        text_bg = pack(0, 0, 40);
 
         draw_text(30, y, "OpenIPC Ground Station", scale, pack(0, 255, 0));
         y += line_h + scale * 2;
@@ -403,26 +464,27 @@ static int wfb_loop(void)
         unsigned long green = pack(0, 255, 0);
         unsigned long amber = pack(255, 200, 0);
         unsigned long red   = pack(255, 80, 80);
+        unsigned long scrim = pack(32, 32, 32);
         int n = read_fields(WFB_STATUS, f, WFB_FIELDS);
         int y = y0;
 
-        clear_transparent(x0, y0, strip_w, strip_h);
+        clear_transparent(x0 - 8, y0 - 4, strip_w, strip_h + 8);
 
         /* rssi is "-" until a packet actually decrypts, so it doubles as the
            "is this link real" test -- the same one wfb-start keys the player on. */
         if (n < WFB_FIELDS || strcmp(f[3], "-") == 0) {
-            draw_text(x0, y, "No link", scale, red);
+            draw_label(x0, y, "No link", scale, red, scrim);
         } else {
             int rssi = atoi(f[3]);
             int lost = atoi(f[8]);
 
             snprintf(buf, sizeof(buf), "%s dBm  SNR %s  MCS%s", f[3], f[4], f[1]);
-            draw_text(x0, y, buf, scale,
-                      rssi > -70 ? green : (rssi > -80 ? amber : red));
+            draw_label(x0, y, buf, scale,
+                       rssi > -70 ? green : (rssi > -80 ? amber : red), scrim);
             y += line_h;
 
             snprintf(buf, sizeof(buf), "%s kbps  FEC %s  Lost %s", f[6], f[7], f[8]);
-            draw_text(x0, y, buf, scale, lost > 0 ? red : white);
+            draw_label(x0, y, buf, scale, lost > 0 ? red : white, scrim);
         }
 
         sleep(1);
@@ -466,8 +528,9 @@ static int timer_loop(const char *label)
         else
             snprintf(buf, sizeof(buf), "%s", clk);
 
-        clear_transparent(x0, y0, w, line_h);
-        draw_text(x0, y0, buf, scale, pack(255, 255, 255));
+        clear_transparent(x0 - 8, y0 - 4, w + 16, line_h + 8);
+        /* Green: white sits on top of bright sky and vanishes. */
+        draw_label(x0, y0, buf, scale, pack(0, 255, 0), pack(32, 32, 32));
         sleep(1);
     }
 
@@ -531,12 +594,14 @@ int main(int argc, char **argv)
         const char *iface = (argc > 2) ? argv[2] : "wlan0";
 
         fill_rect(0, 0, (int)vinfo.xres, (int)vinfo.yres, pack(0, 0, 40));
+    text_bg = pack(0, 0, 40);
         return stats_loop(iface);
     }
 
     /* Dark background rather than black: makes it obvious the OSD layer is
        actually being drawn, instead of just showing the MI_DISP background. */
     fill_rect(0, 0, (int)vinfo.xres, (int)vinfo.yres, pack(0, 0, 40));
+    text_bg = pack(0, 0, 40);
 
     y = 20;
     if (bars) {

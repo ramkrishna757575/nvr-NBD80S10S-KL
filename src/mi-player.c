@@ -1331,10 +1331,48 @@ int main(int argc, char **argv)
         close(rtsp_fd);
         rtsp_fd = -1;
     }
-    MI_SYS_UnBindChnPort(&src, &dst);      /* divp -> disp */
-    MI_DIVP_StopChn(DIVP_CHN);
-    MI_DIVP_DestroyChn(DIVP_CHN);
+    /* Unwind in the reverse of the order it was built: stop the sources, drop
+       the binds, then disable the sink. Two things were wrong here.
+       MI_SYS_UnBindChnPort was only ever called for divp->disp, so VDEC was
+       destroyed still bound to DIVP. And DISP was left enabled with buffers in
+       flight while the process exited, which closes the HDMI handle -- the
+       display then waits for a vsync that can no longer arrive, logs "wait
+       disp timezone vbp timeout", stalls two seconds in CheckInputTaskStatus,
+       and frees buffers underneath the device unregister. */
     MI_VDEC_StopChn(VDEC_CHN);
+
+    memset(&src, 0, sizeof(src));
+    src.eModId    = E_MI_MODULE_ID_VDEC;
+    src.u32DevId  = 0;
+    src.u32ChnId  = VDEC_CHN;
+    src.u32PortId = 0;
+    memset(&dst, 0, sizeof(dst));
+    dst.eModId    = E_MI_MODULE_ID_DIVP;
+    dst.u32DevId  = 0;
+    dst.u32ChnId  = DIVP_CHN;
+    dst.u32PortId = 0;
+    MI_SYS_UnBindChnPort(&src, &dst);
+
+    MI_DIVP_StopChn(DIVP_CHN);
+
+    memset(&src, 0, sizeof(src));
+    src.eModId    = E_MI_MODULE_ID_DIVP;
+    src.u32DevId  = 0;
+    src.u32ChnId  = DIVP_CHN;
+    src.u32PortId = 0;
+    memset(&dst, 0, sizeof(dst));
+    dst.eModId    = E_MI_MODULE_ID_DISP;
+    dst.u32DevId  = DISP_DEV;
+    dst.u32ChnId  = DISP_LAYER;
+    dst.u32PortId = DISP_PORT;
+    MI_SYS_UnBindChnPort(&src, &dst);
+
+    MI_DISP_DisableInputPort(DISP_LAYER, DISP_PORT);
+    MI_DISP_DisableVideoLayer(DISP_LAYER);
+    MI_DISP_UnBindVideoLayer(DISP_LAYER, DISP_DEV);
+    MI_DISP_Disable(DISP_DEV);
+
+    MI_DIVP_DestroyChn(DIVP_CHN);
     MI_VDEC_DestroyChn(VDEC_CHN);
     MI_VDEC_DeInitDev();
 
